@@ -1,0 +1,11 @@
+[package]
+name = "redis-automerge"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+automerge = "1.0.0-beta.3"
+redis-module = "2"

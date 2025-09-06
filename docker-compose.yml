@@ -1,0 +1,16 @@
+version: "3.8"
+services:
+  redis:
+    build: .
+    ports:
+      - "6379:6379"
+  test:
+    image: redis:7
+    depends_on:
+      - redis
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    entrypoint: ["bash", "scripts/test-module.sh"]
+    environment:
+      REDIS_HOST: redis
