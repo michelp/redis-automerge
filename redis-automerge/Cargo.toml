@@ -7,5 +7,5 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-automerge = "1.0.0-beta.3"
+automerge = "0.6.1"
 redis-module = "2"
