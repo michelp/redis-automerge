@@ -9,10 +9,12 @@ Automerge Documents for Redis
 
 - AOF streaming of incremental changes
 
-- RedisJSON compat?
-
 - Commands for sync
 
 - Rustdoc tests
 
 - RAMP module packaging
+
+- RedisJSON compat?
+
+- is save/load over net safe?
