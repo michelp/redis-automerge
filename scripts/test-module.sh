@@ -185,5 +185,62 @@ test "$val1" = "flat value"
 test "$val2" = "nested value"
 echo "   ✓ Mixed flat and nested keys work"
 
+# Test array/list operations
+echo "14. Testing list creation and append operations..."
+redis-cli -h "$HOST" del doc6
+redis-cli -h "$HOST" am.new doc6
+redis-cli -h "$HOST" am.createlist doc6 users
+redis-cli -h "$HOST" am.appendtext doc6 users "Alice"
+redis-cli -h "$HOST" am.appendtext doc6 users "Bob"
+len=$(redis-cli -h "$HOST" am.listlen doc6 users)
+test "$len" = "2"
+echo "   ✓ List creation and append works"
+
+# Test array index access
+echo "15. Testing array index access..."
+val1=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[0]')
+val2=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[1]')
+test "$val1" = "Alice"
+test "$val2" = "Bob"
+echo "   ✓ Array index access works"
+
+# Test different types in lists
+echo "16. Testing different types in lists..."
+redis-cli -h "$HOST" am.createlist doc6 ages
+redis-cli -h "$HOST" am.appendint doc6 ages 25
+redis-cli -h "$HOST" am.appendint doc6 ages 30
+age1=$(redis-cli -h "$HOST" am.getint doc6 'ages[0]')
+age2=$(redis-cli -h "$HOST" am.getint doc6 'ages[1]')
+test "$age1" = "25"
+test "$age2" = "30"
+echo "   ✓ Different types in lists work"
+
+# Test nested list paths
+echo "17. Testing nested list paths..."
+redis-cli -h "$HOST" del doc7
+redis-cli -h "$HOST" am.new doc7
+redis-cli -h "$HOST" am.createlist doc7 data.items
+redis-cli -h "$HOST" am.appendtext doc7 data.items "item1"
+redis-cli -h "$HOST" am.appendtext doc7 data.items "item2"
+item1=$(redis-cli -h "$HOST" --raw am.gettext doc7 'data.items[0]')
+item2=$(redis-cli -h "$HOST" --raw am.gettext doc7 'data.items[1]')
+test "$item1" = "item1"
+test "$item2" = "item2"
+echo "   ✓ Nested list paths work"
+
+# Test list persistence
+echo "18. Testing list persistence..."
+redis-cli -h "$HOST" --raw am.save doc6 > /tmp/list-saved.bin
+truncate -s -1 /tmp/list-saved.bin
+redis-cli -h "$HOST" del doc6
+redis-cli -h "$HOST" --raw -x am.load doc6 < /tmp/list-saved.bin
+len=$(redis-cli -h "$HOST" am.listlen doc6 users)
+val1=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[0]')
+val2=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[1]')
+test "$len" = "2"
+test "$val1" = "Alice"
+test "$val2" = "Bob"
+echo "   ✓ List persistence works"
+
 echo ""
 echo "✅ All integration tests passed!"

@@ -250,6 +250,128 @@ fn am_getbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
 }
 
+fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .create_list(path)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.createlist", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let value = parse_utf8_value(&args[3])?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .append_text(path, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.appendtext", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let value: i64 = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("value must be an integer"))?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .append_int(path, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.appendint", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let value: f64 = parse_utf8_value(&args[3])?
+        .parse()
+        .map_err(|_| RedisError::Str("value must be a valid double"))?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .append_double(path, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.appenddouble", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let value_str = parse_utf8_value(&args[3])?;
+    let value = match value_str.to_lowercase().as_str() {
+        "true" | "1" => true,
+        "false" | "0" => false,
+        _ => return Err(RedisError::Str("value must be true/false or 1/0")),
+    };
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .append_bool(path, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.appendbool", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_listlen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .list_len(path)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(len) => Ok(RedisValue::Integer(len as i64)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
 fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() < 3 {
         return Err(RedisError::WrongArity);
@@ -325,6 +447,12 @@ redis_module! {
         ["am.getdouble", am_getdouble, "readonly", 1, 1, 1],
         ["am.putbool", am_putbool, "write", 1, 1, 1],
         ["am.getbool", am_getbool, "readonly", 1, 1, 1],
+        ["am.createlist", am_createlist, "write", 1, 1, 1],
+        ["am.appendtext", am_appendtext, "write", 1, 1, 1],
+        ["am.appendint", am_appendint, "write", 1, 1, 1],
+        ["am.appenddouble", am_appenddouble, "write", 1, 1, 1],
+        ["am.appendbool", am_appendbool, "write", 1, 1, 1],
+        ["am.listlen", am_listlen, "readonly", 1, 1, 1],
     ],
 }
 
@@ -558,5 +686,110 @@ mod tests {
             client.get_text("nested.key").unwrap(),
             Some("nested value".to_string())
         );
+    }
+
+    #[test]
+    fn list_operations() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create a list
+        client.create_list("users").unwrap();
+        assert_eq!(client.list_len("users").unwrap(), Some(0));
+
+        // Append text values
+        client.append_text("users", "Alice").unwrap();
+        client.append_text("users", "Bob").unwrap();
+        assert_eq!(client.list_len("users").unwrap(), Some(2));
+
+        // Read values by index
+        assert_eq!(client.get_text("users[0]").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client.get_text("users[1]").unwrap(), Some("Bob".to_string()));
+    }
+
+    #[test]
+    fn list_with_different_types() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create lists for different types
+        client.create_list("names").unwrap();
+        client.create_list("ages").unwrap();
+        client.create_list("scores").unwrap();
+        client.create_list("flags").unwrap();
+
+        // Append different types
+        client.append_text("names", "Alice").unwrap();
+        client.append_int("ages", 25).unwrap();
+        client.append_double("scores", 95.5).unwrap();
+        client.append_bool("flags", true).unwrap();
+
+        // Read back
+        assert_eq!(client.get_text("names[0]").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client.get_int("ages[0]").unwrap(), Some(25));
+        assert_eq!(client.get_double("scores[0]").unwrap(), Some(95.5));
+        assert_eq!(client.get_bool("flags[0]").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn nested_list_path() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create nested list
+        client.create_list("data.items").unwrap();
+        client.append_text("data.items", "item1").unwrap();
+        client.append_text("data.items", "item2").unwrap();
+
+        assert_eq!(client.list_len("data.items").unwrap(), Some(2));
+        assert_eq!(
+            client.get_text("data.items[0]").unwrap(),
+            Some("item1".to_string())
+        );
+        assert_eq!(
+            client.get_text("data.items[1]").unwrap(),
+            Some("item2".to_string())
+        );
+    }
+
+    #[test]
+    fn array_index_in_path() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create list of users
+        client.create_list("users").unwrap();
+        client.append_text("users", "placeholder").unwrap();
+
+        // Now set nested field on list element (this requires the list element to be an object)
+        // This test verifies path parsing with array indices works
+        assert_eq!(client.get_text("users[0]").unwrap(), Some("placeholder".to_string()));
+    }
+
+    #[test]
+    fn list_persistence() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create and populate list
+        client.create_list("items").unwrap();
+        client.append_text("items", "first").unwrap();
+        client.append_int("items", 42).unwrap();
+
+        // Save and reload
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+
+        assert_eq!(loaded.list_len("items").unwrap(), Some(2));
+        assert_eq!(loaded.get_text("items[0]").unwrap(), Some("first".to_string()));
+        assert_eq!(loaded.get_int("items[1]").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn path_parsing_with_brackets() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create nested structure with lists
+        client.create_list("users").unwrap();
+        client.append_text("users", "user0").unwrap();
+
+        // Test various path formats
+        assert_eq!(client.get_text("users[0]").unwrap(), Some("user0".to_string()));
+        assert_eq!(client.get_text("$.users[0]").unwrap(), Some("user0".to_string()));
     }
 }
