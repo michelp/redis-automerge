@@ -4,18 +4,13 @@ use std::os::raw::{c_int, c_void};
 
 use automerge::Change;
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
+#[cfg(not(test))]
+use redis_module::redis_module;
 use redis_module::{
     native_types::RedisType,
     raw::{self, Status},
-    Context,
-    NextArg,
-    RedisError,
-    RedisResult,
-    RedisString,
-    RedisValue,
+    Context, NextArg, RedisError, RedisResult, RedisString, RedisValue,
 };
-#[cfg(not(test))]
-use redis_module::redis_module;
 
 static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
     "amdoc-rs1",
@@ -117,7 +112,10 @@ fn am_gettext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let client = key
         .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
         .ok_or(RedisError::Str("no such key"))?;
-    match client.get_text(field).map_err(|e| RedisError::String(e.to_string()))? {
+    match client
+        .get_text(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
         Some(text) => Ok(RedisValue::BulkString(text)),
         None => Ok(RedisValue::Null),
     }
@@ -135,7 +133,8 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut changes = Vec::new();
     for change_str in &args[2..] {
         let bytes = change_str.to_vec();
-        let change = Change::from_bytes(bytes).map_err(|_| RedisError::Str("invalid change"))?;
+        let change = Change::from_bytes(bytes)
+            .map_err(|e| RedisError::String(format!("invalid change: {}", e)))?;
         changes.push(change);
     }
     client
@@ -146,15 +145,27 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
+/// # Safety
+/// This function is called by Redis when freeing a RedisAutomergeClient value.
+/// The caller (Redis) must ensure that `value` is a valid pointer to a
+/// RedisAutomergeClient that was previously allocated via Box::into_raw.
 unsafe extern "C" fn am_free(value: *mut c_void) {
     drop(Box::from_raw(value.cast::<RedisAutomergeClient>()));
 }
 
+/// # Safety
+/// This function is called by Redis during RDB persistence.
+/// The caller (Redis) must ensure that `rdb` is a valid RedisModuleIO pointer
+/// and `value` is a valid pointer to a RedisAutomergeClient.
 unsafe extern "C" fn am_rdb_save(rdb: *mut raw::RedisModuleIO, value: *mut c_void) {
     let client = &*(value.cast::<RedisAutomergeClient>());
     raw::save_slice(rdb, &client.save());
 }
 
+/// # Safety
+/// This function is called by Redis during RDB loading.
+/// The caller (Redis) must ensure that `rdb` is a valid RedisModuleIO pointer.
+/// Returns a pointer to a newly allocated RedisAutomergeClient, or null on error.
 unsafe extern "C" fn am_rdb_load(rdb: *mut raw::RedisModuleIO, _encver: c_int) -> *mut c_void {
     match raw::load_string_buffer(rdb) {
         Ok(buf) => match RedisAutomergeClient::load(buf.as_ref()) {
@@ -214,10 +225,16 @@ mod tests {
     fn put_and_get_text_roundtrip() {
         let mut client = RedisAutomergeClient::new();
         client.put_text("greeting", "hello").unwrap();
-        assert_eq!(client.get_text("greeting").unwrap(), Some("hello".to_string()));
+        assert_eq!(
+            client.get_text("greeting").unwrap(),
+            Some("hello".to_string())
+        );
 
         let bytes = client.save();
         let loaded = RedisAutomergeClient::load(&bytes).unwrap();
-        assert_eq!(loaded.get_text("greeting").unwrap(), Some("hello".to_string()));
+        assert_eq!(
+            loaded.get_text("greeting").unwrap(),
+            Some("hello".to_string())
+        );
     }
 }

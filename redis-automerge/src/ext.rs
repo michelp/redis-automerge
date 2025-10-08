@@ -1,14 +1,7 @@
 //! Extension trait and minimal implementation for working with Redis Automerge.
 
 use automerge::{
-    transaction::Transactable,
-    Automerge,
-    AutomergeError,
-    Change,
-    ReadDoc,
-    ROOT,
-    Value,
-    ScalarValue,
+    transaction::Transactable, Automerge, AutomergeError, Change, ReadDoc, ScalarValue, Value, ROOT,
 };
 
 /// Convenience methods for integrating Automerge with Redis persistence layers.
@@ -67,13 +60,12 @@ impl RedisAutomergeClient {
 
     /// Retrieve a text value from the root object by key.
     pub fn get_text(&self, key: &str) -> Result<Option<String>, AutomergeError> {
-        match self.doc.get(ROOT, key)? {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(t) => Ok(Some(t.to_string())),
-                _ => Ok(None),
-            },
-            _ => Ok(None),
+        if let Some((Value::Scalar(s), _)) = self.doc.get(ROOT, key)? {
+            if let ScalarValue::Str(t) = s.as_ref() {
+                return Ok(Some(t.to_string()));
+            }
         }
+        Ok(None)
     }
 }
 
@@ -86,7 +78,10 @@ impl Default for RedisAutomergeClient {
 impl RedisAutomergeExt for RedisAutomergeClient {
     fn load(bytes: &[u8]) -> Result<Self, AutomergeError> {
         let doc = Automerge::load(bytes)?;
-        Ok(Self { doc, aof: Vec::new() })
+        Ok(Self {
+            doc,
+            aof: Vec::new(),
+        })
     }
 
     fn save(&self) -> Vec<u8> {
@@ -94,10 +89,10 @@ impl RedisAutomergeExt for RedisAutomergeClient {
     }
 
     fn apply(&mut self, changes: Vec<Change>) -> Result<(), AutomergeError> {
-        self.doc.apply_changes(changes.clone())?;
-        for change in changes {
+        for change in &changes {
             self.aof.push(change.raw_bytes().to_vec());
         }
+        self.doc.apply_changes(changes)?;
         Ok(())
     }
 
