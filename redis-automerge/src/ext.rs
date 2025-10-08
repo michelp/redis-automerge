@@ -67,6 +67,75 @@ impl RedisAutomergeClient {
         }
         Ok(None)
     }
+
+    /// Insert an integer value at the root object under the given key.
+    pub fn put_int(&mut self, key: &str, value: i64) -> Result<(), AutomergeError> {
+        let mut tx = self.doc.transaction();
+        tx.put(ROOT, key, value)?;
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Retrieve an integer value from the root object by key.
+    pub fn get_int(&self, key: &str) -> Result<Option<i64>, AutomergeError> {
+        if let Some((Value::Scalar(s), _)) = self.doc.get(ROOT, key)? {
+            if let ScalarValue::Int(i) = s.as_ref() {
+                return Ok(Some(*i));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Insert a double value at the root object under the given key.
+    pub fn put_double(&mut self, key: &str, value: f64) -> Result<(), AutomergeError> {
+        let mut tx = self.doc.transaction();
+        tx.put(ROOT, key, value)?;
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Retrieve a double value from the root object by key.
+    pub fn get_double(&self, key: &str) -> Result<Option<f64>, AutomergeError> {
+        if let Some((Value::Scalar(s), _)) = self.doc.get(ROOT, key)? {
+            if let ScalarValue::F64(f) = s.as_ref() {
+                return Ok(Some(*f));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Insert a boolean value at the root object under the given key.
+    pub fn put_bool(&mut self, key: &str, value: bool) -> Result<(), AutomergeError> {
+        let mut tx = self.doc.transaction();
+        tx.put(ROOT, key, value)?;
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Retrieve a boolean value from the root object by key.
+    pub fn get_bool(&self, key: &str) -> Result<Option<bool>, AutomergeError> {
+        if let Some((Value::Scalar(s), _)) = self.doc.get(ROOT, key)? {
+            if let ScalarValue::Boolean(b) = s.as_ref() {
+                return Ok(Some(*b));
+            }
+        }
+        Ok(None)
+    }
 }
 
 impl Default for RedisAutomergeClient {

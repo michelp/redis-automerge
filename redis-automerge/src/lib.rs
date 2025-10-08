@@ -45,6 +45,18 @@ fn init(ctx: &Context, _args: &Vec<RedisString>) -> Status {
         .unwrap_or(Status::Err)
 }
 
+/// Helper function to parse a RedisString as UTF-8 with a custom error message.
+fn parse_utf8_field<'a>(s: &'a RedisString, field_name: &str) -> Result<&'a str, RedisError> {
+    s.try_as_str()
+        .map_err(|_| RedisError::String(format!("{} must be utf-8", field_name)))
+}
+
+/// Helper function to parse a RedisString as UTF-8 (generic "value" error).
+fn parse_utf8_value(s: &RedisString) -> Result<&str, RedisError> {
+    s.try_as_str()
+        .map_err(|_| RedisError::Str("value must be utf-8"))
+}
+
 fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut args = args.into_iter().skip(1);
     let key_name = args.next_arg()?;
@@ -82,12 +94,8 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         return Err(RedisError::WrongArity);
     }
     let key_name = &args[1];
-    let field = args[2]
-        .try_as_str()
-        .map_err(|_| RedisError::Str("field must be utf-8"))?;
-    let value = args[3]
-        .try_as_str()
-        .map_err(|_| RedisError::Str("value must be utf-8"))?;
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value = parse_utf8_value(&args[3])?;
     let key = ctx.open_key_writable(key_name);
     let client = key
         .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
@@ -105,9 +113,7 @@ fn am_gettext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         return Err(RedisError::WrongArity);
     }
     let key_name = &args[1];
-    let field = args[2]
-        .try_as_str()
-        .map_err(|_| RedisError::Str("field must be utf-8"))?;
+    let field = parse_utf8_field(&args[2], "field")?;
     let key = ctx.open_key(key_name);
     let client = key
         .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
@@ -117,6 +123,129 @@ fn am_gettext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?
     {
         Some(text) => Ok(RedisValue::BulkString(text)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
+fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value: i64 = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("value must be an integer"))?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .put_int(field, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.putint", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_getint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .get_int(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(value) => Ok(RedisValue::Integer(value)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
+fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value: f64 = parse_utf8_value(&args[3])?
+        .parse()
+        .map_err(|_| RedisError::Str("value must be a valid double"))?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .put_double(field, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.putdouble", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_getdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .get_double(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(value) => Ok(RedisValue::Float(value)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
+fn am_putbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value_str = parse_utf8_value(&args[3])?;
+    let value = match value_str.to_lowercase().as_str() {
+        "true" | "1" => true,
+        "false" | "0" => false,
+        _ => return Err(RedisError::Str("value must be true/false or 1/0")),
+    };
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .put_bool(field, value)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.putbool", &refs[..]);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_getbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .get_bool(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(value) => Ok(RedisValue::Integer(if value { 1 } else { 0 })),
         None => Ok(RedisValue::Null),
     }
 }
@@ -190,6 +319,12 @@ redis_module! {
         ["am.apply", am_apply, "write", 1, 1, 1],
         ["am.puttext", am_puttext, "write", 1, 1, 1],
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
+        ["am.putint", am_putint, "write", 1, 1, 1],
+        ["am.getint", am_getint, "readonly", 1, 1, 1],
+        ["am.putdouble", am_putdouble, "write", 1, 1, 1],
+        ["am.getdouble", am_getdouble, "readonly", 1, 1, 1],
+        ["am.putbool", am_putbool, "write", 1, 1, 1],
+        ["am.getbool", am_getbool, "readonly", 1, 1, 1],
     ],
 }
 
@@ -236,5 +371,79 @@ mod tests {
             loaded.get_text("greeting").unwrap(),
             Some("hello".to_string())
         );
+    }
+
+    #[test]
+    fn put_and_get_int_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_int("age", 42).unwrap();
+        assert_eq!(client.get_int("age").unwrap(), Some(42));
+
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_int("age").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn put_and_get_int_negative() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_int("temperature", -10).unwrap();
+        assert_eq!(client.get_int("temperature").unwrap(), Some(-10));
+    }
+
+    #[test]
+    fn put_and_get_double_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_double("pi", 3.14159).unwrap();
+        assert_eq!(client.get_double("pi").unwrap(), Some(3.14159));
+
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_double("pi").unwrap(), Some(3.14159));
+    }
+
+    #[test]
+    fn put_and_get_bool_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_bool("active", true).unwrap();
+        assert_eq!(client.get_bool("active").unwrap(), Some(true));
+
+        client.put_bool("disabled", false).unwrap();
+        assert_eq!(client.get_bool("disabled").unwrap(), Some(false));
+
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_bool("active").unwrap(), Some(true));
+        assert_eq!(loaded.get_bool("disabled").unwrap(), Some(false));
+    }
+
+    #[test]
+    fn get_nonexistent_fields() {
+        let client = RedisAutomergeClient::new();
+        assert_eq!(client.get_text("missing").unwrap(), None);
+        assert_eq!(client.get_int("missing").unwrap(), None);
+        assert_eq!(client.get_double("missing").unwrap(), None);
+        assert_eq!(client.get_bool("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn mixed_types_in_document() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_text("name", "Alice").unwrap();
+        client.put_int("age", 30).unwrap();
+        client.put_double("height", 5.6).unwrap();
+        client.put_bool("verified", true).unwrap();
+
+        assert_eq!(client.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client.get_int("age").unwrap(), Some(30));
+        assert_eq!(client.get_double("height").unwrap(), Some(5.6));
+        assert_eq!(client.get_bool("verified").unwrap(), Some(true));
+
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(loaded.get_int("age").unwrap(), Some(30));
+        assert_eq!(loaded.get_double("height").unwrap(), Some(5.6));
+        assert_eq!(loaded.get_bool("verified").unwrap(), Some(true));
     }
 }
