@@ -446,4 +446,117 @@ mod tests {
         assert_eq!(loaded.get_double("height").unwrap(), Some(5.6));
         assert_eq!(loaded.get_bool("verified").unwrap(), Some(true));
     }
+
+    #[test]
+    fn nested_path_operations() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Test nested text field
+        client.put_text("user.profile.name", "Bob").unwrap();
+        assert_eq!(
+            client.get_text("user.profile.name").unwrap(),
+            Some("Bob".to_string())
+        );
+
+        // Test nested int field
+        client.put_int("user.profile.age", 25).unwrap();
+        assert_eq!(client.get_int("user.profile.age").unwrap(), Some(25));
+
+        // Test nested double field
+        client.put_double("metrics.cpu.usage", 75.5).unwrap();
+        assert_eq!(client.get_double("metrics.cpu.usage").unwrap(), Some(75.5));
+
+        // Test nested bool field
+        client.put_bool("flags.features.enabled", true).unwrap();
+        assert_eq!(
+            client.get_bool("flags.features.enabled").unwrap(),
+            Some(true)
+        );
+
+        // Test that nonexistent nested paths return None
+        assert_eq!(client.get_text("user.profile.email").unwrap(), None);
+        assert_eq!(client.get_int("missing.path.value").unwrap(), None);
+    }
+
+    #[test]
+    fn nested_path_with_dollar_prefix() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Test with $ prefix (JSONPath style)
+        client.put_text("$.user.name", "Charlie").unwrap();
+        assert_eq!(
+            client.get_text("$.user.name").unwrap(),
+            Some("Charlie".to_string())
+        );
+
+        // Verify that the same path without $ works
+        assert_eq!(
+            client.get_text("user.name").unwrap(),
+            Some("Charlie".to_string())
+        );
+    }
+
+    #[test]
+    fn nested_path_persistence() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create nested structure
+        client.put_text("user.profile.name", "Diana").unwrap();
+        client.put_int("user.profile.age", 28).unwrap();
+        client.put_double("user.metrics.score", 95.7).unwrap();
+        client.put_bool("user.active", true).unwrap();
+
+        // Persist and reload
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+
+        // Verify all nested values are preserved
+        assert_eq!(
+            loaded.get_text("user.profile.name").unwrap(),
+            Some("Diana".to_string())
+        );
+        assert_eq!(loaded.get_int("user.profile.age").unwrap(), Some(28));
+        assert_eq!(loaded.get_double("user.metrics.score").unwrap(), Some(95.7));
+        assert_eq!(loaded.get_bool("user.active").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn deeply_nested_paths() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Test deeply nested path
+        client
+            .put_text("a.b.c.d.e.f.value", "deeply nested")
+            .unwrap();
+        assert_eq!(
+            client.get_text("a.b.c.d.e.f.value").unwrap(),
+            Some("deeply nested".to_string())
+        );
+
+        // Verify persistence
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(
+            loaded.get_text("a.b.c.d.e.f.value").unwrap(),
+            Some("deeply nested".to_string())
+        );
+    }
+
+    #[test]
+    fn mixed_nested_and_flat_keys() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Mix flat and nested keys
+        client.put_text("simple", "flat value").unwrap();
+        client.put_text("nested.key", "nested value").unwrap();
+
+        assert_eq!(
+            client.get_text("simple").unwrap(),
+            Some("flat value".to_string())
+        );
+        assert_eq!(
+            client.get_text("nested.key").unwrap(),
+            Some("nested value".to_string())
+        );
+    }
 }
