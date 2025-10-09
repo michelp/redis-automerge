@@ -37,7 +37,8 @@
 //! ```
 
 use automerge::{
-    transaction::Transactable, Automerge, AutomergeError, Change, ObjId, ReadDoc, ScalarValue, Value, ROOT,
+    transaction::Transactable, Automerge, AutomergeError, Change, ObjId, ReadDoc, ScalarValue,
+    Value, ROOT,
 };
 
 /// Represents a path segment - either a map key or a list index
@@ -82,7 +83,8 @@ fn parse_path(path: &str) -> Result<Vec<PathSegment>, AutomergeError> {
                 bracket_content.clear();
             }
             ']' if in_bracket => {
-                let index = bracket_content.parse::<usize>()
+                let index = bracket_content
+                    .parse::<usize>()
                     .map_err(|_| AutomergeError::Fail)?;
                 segments.push(PathSegment::Index(index));
                 in_bracket = false;
@@ -168,24 +170,20 @@ fn navigate_path_read(
 
     for segment in path {
         match segment {
-            PathSegment::Key(key) => {
-                match doc.get(&current, key.as_str())? {
-                    Some((Value::Object(_obj_type), obj_id)) => {
-                        current = obj_id;
-                    }
-                    Some(_) => return Ok(None),
-                    None => return Ok(None),
+            PathSegment::Key(key) => match doc.get(&current, key.as_str())? {
+                Some((Value::Object(_obj_type), obj_id)) => {
+                    current = obj_id;
                 }
-            }
-            PathSegment::Index(idx) => {
-                match doc.get(&current, *idx)? {
-                    Some((Value::Object(_obj_type), obj_id)) => {
-                        current = obj_id;
-                    }
-                    Some(_) => return Ok(None),
-                    None => return Ok(None),
+                Some(_) => return Ok(None),
+                None => return Ok(None),
+            },
+            PathSegment::Index(idx) => match doc.get(&current, *idx)? {
+                Some((Value::Object(_obj_type), obj_id)) => {
+                    current = obj_id;
                 }
-            }
+                Some(_) => return Ok(None),
+                None => return Ok(None),
+            },
         }
     }
 
@@ -383,7 +381,9 @@ impl RedisAutomergeClient {
             }
         };
 
-        if let Some((Value::Scalar(s), _)) = get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
             if let ScalarValue::Str(t) = s.as_ref() {
                 return Ok(Some(t.to_string()));
             }
@@ -432,7 +432,9 @@ impl RedisAutomergeClient {
             }
         };
 
-        if let Some((Value::Scalar(s), _)) = get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
             if let ScalarValue::Int(i) = s.as_ref() {
                 return Ok(Some(*i));
             }
@@ -481,7 +483,9 @@ impl RedisAutomergeClient {
             }
         };
 
-        if let Some((Value::Scalar(s), _)) = get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
             if let ScalarValue::F64(f) = s.as_ref() {
                 return Ok(Some(*f));
             }
@@ -530,7 +534,9 @@ impl RedisAutomergeClient {
             }
         };
 
-        if let Some((Value::Scalar(s), _)) = get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
             if let ScalarValue::Boolean(b) = s.as_ref() {
                 return Ok(Some(*b));
             }

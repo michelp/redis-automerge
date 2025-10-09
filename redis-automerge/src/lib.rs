@@ -771,8 +771,14 @@ mod tests {
         assert_eq!(client.list_len("users").unwrap(), Some(2));
 
         // Read values by index
-        assert_eq!(client.get_text("users[0]").unwrap(), Some("Alice".to_string()));
-        assert_eq!(client.get_text("users[1]").unwrap(), Some("Bob".to_string()));
+        assert_eq!(
+            client.get_text("users[0]").unwrap(),
+            Some("Alice".to_string())
+        );
+        assert_eq!(
+            client.get_text("users[1]").unwrap(),
+            Some("Bob".to_string())
+        );
     }
 
     #[test]
@@ -792,7 +798,10 @@ mod tests {
         client.append_bool("flags", true).unwrap();
 
         // Read back
-        assert_eq!(client.get_text("names[0]").unwrap(), Some("Alice".to_string()));
+        assert_eq!(
+            client.get_text("names[0]").unwrap(),
+            Some("Alice".to_string())
+        );
         assert_eq!(client.get_int("ages[0]").unwrap(), Some(25));
         assert_eq!(client.get_double("scores[0]").unwrap(), Some(95.5));
         assert_eq!(client.get_bool("flags[0]").unwrap(), Some(true));
@@ -828,7 +837,10 @@ mod tests {
 
         // Now set nested field on list element (this requires the list element to be an object)
         // This test verifies path parsing with array indices works
-        assert_eq!(client.get_text("users[0]").unwrap(), Some("placeholder".to_string()));
+        assert_eq!(
+            client.get_text("users[0]").unwrap(),
+            Some("placeholder".to_string())
+        );
     }
 
     #[test]
@@ -845,7 +857,10 @@ mod tests {
         let loaded = RedisAutomergeClient::load(&bytes).unwrap();
 
         assert_eq!(loaded.list_len("items").unwrap(), Some(2));
-        assert_eq!(loaded.get_text("items[0]").unwrap(), Some("first".to_string()));
+        assert_eq!(
+            loaded.get_text("items[0]").unwrap(),
+            Some("first".to_string())
+        );
         assert_eq!(loaded.get_int("items[1]").unwrap(), Some(42));
     }
 
@@ -858,7 +873,13 @@ mod tests {
         client.append_text("users", "user0").unwrap();
 
         // Test various path formats
-        assert_eq!(client.get_text("users[0]").unwrap(), Some("user0".to_string()));
-        assert_eq!(client.get_text("$.users[0]").unwrap(), Some("user0".to_string()));
+        assert_eq!(
+            client.get_text("users[0]").unwrap(),
+            Some("user0".to_string())
+        );
+        assert_eq!(
+            client.get_text("$.users[0]").unwrap(),
+            Some("user0".to_string())
+        );
     }
 }
