@@ -1,0 +1,7 @@
+target/
+.git/
+.github/
+*.md
+demo/
+webdis.json
+docker-compose.yml

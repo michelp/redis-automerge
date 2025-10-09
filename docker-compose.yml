@@ -1,16 +1,41 @@
-version: "3.8"
 services:
   redis:
     build: .
     ports:
       - "6379:6379"
+
+  webdis:
+    image: nicolas/webdis:latest
+    depends_on:
+      - redis
+    ports:
+      - "7379:7379"
+    environment:
+      REDIS_HOST: redis
+    volumes:
+      - ./webdis.json:/etc/webdis.prod.json:ro
+
+  demo:
+    image: nginx:alpine
+    depends_on:
+      - redis
+      - webdis
+    ports:
+      - "8080:80"
+    volumes:
+      - ./demo:/usr/share/nginx/html:ro
+      - ./demo/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+
   test:
     image: redis:7
     depends_on:
       - redis
+      - webdis
     volumes:
       - .:/workspace
     working_dir: /workspace
     entrypoint: ["bash", "scripts/test-module.sh"]
     environment:
       REDIS_HOST: redis
+      WEBDIS_HOST: webdis
+      WEBDIS_PORT: 7379

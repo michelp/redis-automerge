@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Redis-Automerge Demo</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔴 Redis-Automerge Demo</h1>
+            <p>A Redis module with Automerge CRDT documents</p>
+        </header>
+
+        <div class="status">
+            <span id="connection-status" class="status-disconnected">Disconnected</span>
+        </div>
+
+        <div class="section">
+            <h2>Document Management</h2>
+            <div class="controls">
+                <input type="text" id="doc-key" placeholder="Document key (e.g., mydoc)" value="demo">
+                <button onclick="createDocument()">Create Document</button>
+                <button onclick="deleteDocument()">Delete Document</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Text Operations</h2>
+            <div class="controls">
+                <input type="text" id="text-path" placeholder="Path (e.g., user.name or $.users[0].name)" value="user.name">
+                <input type="text" id="text-value" placeholder="Text value">
+                <button onclick="putText()">Set Text</button>
+                <button onclick="getText()">Get Text</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Integer Operations</h2>
+            <div class="controls">
+                <input type="text" id="int-path" placeholder="Path (e.g., user.age)" value="user.age">
+                <input type="number" id="int-value" placeholder="Integer value" value="0">
+                <button onclick="putInt()">Set Integer</button>
+                <button onclick="getInt()">Get Integer</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Double Operations</h2>
+            <div class="controls">
+                <input type="text" id="double-path" placeholder="Path (e.g., metrics.cpu)" value="metrics.cpu">
+                <input type="number" id="double-value" placeholder="Double value" step="0.01" value="0.0">
+                <button onclick="putDouble()">Set Double</button>
+                <button onclick="getDouble()">Get Double</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Boolean Operations</h2>
+            <div class="controls">
+                <input type="text" id="bool-path" placeholder="Path (e.g., user.active)" value="user.active">
+                <select id="bool-value">
+                    <option value="true">true</option>
+                    <option value="false">false</option>
+                </select>
+                <button onclick="putBool()">Set Boolean</button>
+                <button onclick="getBool()">Get Boolean</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>List Operations</h2>
+            <div class="controls">
+                <input type="text" id="list-path" placeholder="Path (e.g., users or items)" value="items">
+                <button onclick="createList()">Create List</button>
+                <button onclick="listLen()">Get Length</button>
+            </div>
+            <div class="controls">
+                <input type="text" id="list-append-path" placeholder="List path" value="items">
+                <input type="text" id="list-append-value" placeholder="Value to append">
+                <select id="list-append-type">
+                    <option value="text">Text</option>
+                    <option value="int">Integer</option>
+                    <option value="double">Double</option>
+                    <option value="bool">Boolean</option>
+                </select>
+                <button onclick="appendToList()">Append</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Quick Examples</h2>
+            <div class="examples">
+                <button onclick="runUserProfileExample()">User Profile Example</button>
+                <button onclick="runShoppingCartExample()">Shopping Cart Example</button>
+                <button onclick="runConfigExample()">Configuration Example</button>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Output</h2>
+            <div id="output" class="output"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

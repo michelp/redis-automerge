@@ -47,8 +47,27 @@ redis-server --loadmodule /path/to/libredis_automerge.so
 ### Using Docker Compose
 
 ```bash
+# Start Redis only
 docker compose up redis
+
+# Start all services (Redis + Webdis + Demo frontend)
+docker compose up
+
+# Access demo frontend at http://localhost:8080
+# Access Webdis API at http://localhost:7379
 ```
+
+## Demo Application
+
+A web-based interactive demo is available at `http://localhost:8080` when running `docker compose up`.
+
+The demo provides:
+- Interactive UI for all Redis-Automerge commands
+- Real-time command logging
+- Pre-built examples (user profiles, shopping carts, configuration)
+- Support for nested paths and all data types
+
+See [demo/README.md](demo/README.md) for details.
 
 ## Redis Commands
 
