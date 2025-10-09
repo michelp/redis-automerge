@@ -1,7 +1,7 @@
 # Redis-Automerge
 
-[![CI](https://github.com/<username>/redis-automerge/actions/workflows/ci.yml/badge.svg)](https://github.com/<username>/redis-automerge/actions/workflows/ci.yml)
-[![Documentation](https://github.com/<username>/redis-automerge/actions/workflows/docs.yml/badge.svg)](https://github.com/<username>/redis-automerge/actions/workflows/docs.yml)
+[![CI](https://github.com/michelp/redis-automerge/actions/workflows/ci.yml/badge.svg)](https://github.com/michelp/redis-automerge/actions/workflows/ci.yml)
+[![Documentation](https://github.com/michelp/redis-automerge/actions/workflows/docs.yml/badge.svg)](https://github.com/michelp/redis-automerge/actions/workflows/docs.yml)
 
 A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflict-free Replicated Data Type) documents into Redis, providing JSON-like document storage with automatic conflict resolution.
 
@@ -352,7 +352,7 @@ docker compose down
 ### Online Documentation
 
 API documentation is automatically built and deployed to GitHub Pages:
-- **Latest docs**: `https://<username>.github.io/redis-automerge/`
+- **Latest docs**: `https://michelp.github.io/redis-automerge/`
 
 Documentation is updated automatically on every push to main.
 
