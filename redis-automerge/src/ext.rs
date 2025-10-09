@@ -52,6 +52,7 @@ enum PathSegment {
 /// - "foo.bar" or "$.foo.bar" for map keys
 /// - "foo[0]" or "$.foo[0]" for array indices
 /// - "foo[0].bar" for mixed paths
+///
 /// Returns a vector of path segments.
 fn parse_path(path: &str) -> Result<Vec<PathSegment>, AutomergeError> {
     let trimmed = path.strip_prefix("$.").unwrap_or(path);
