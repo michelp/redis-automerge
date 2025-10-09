@@ -1,3 +1,72 @@
+//! Redis module for Automerge CRDT documents.
+//!
+//! This module integrates [Automerge](https://automerge.org/) conflict-free replicated data types (CRDTs)
+//! into Redis, providing:
+//! - JSON-like document storage with automatic conflict resolution
+//! - Path-based access similar to RedisJSON
+//! - Support for nested maps and arrays
+//! - Persistent storage via RDB and AOF
+//!
+//! # Redis Commands
+//!
+//! ## Document Management
+//! - `AM.NEW <key>` - Create a new empty Automerge document
+//! - `AM.LOAD <key> <bytes>` - Load a document from binary format
+//! - `AM.SAVE <key>` - Save a document to binary format
+//! - `AM.APPLY <key> <change>...` - Apply Automerge changes to a document
+//!
+//! ## Value Operations
+//! - `AM.PUTTEXT <key> <path> <value>` - Set a text value
+//! - `AM.GETTEXT <key> <path>` - Get a text value
+//! - `AM.PUTINT <key> <path> <value>` - Set an integer value
+//! - `AM.GETINT <key> <path>` - Get an integer value
+//! - `AM.PUTDOUBLE <key> <path> <value>` - Set a double value
+//! - `AM.GETDOUBLE <key> <path>` - Get a double value
+//! - `AM.PUTBOOL <key> <path> <value>` - Set a boolean value
+//! - `AM.GETBOOL <key> <path>` - Get a boolean value
+//!
+//! ## List Operations
+//! - `AM.CREATELIST <key> <path>` - Create a new list
+//! - `AM.APPENDTEXT <key> <path> <value>` - Append text to a list
+//! - `AM.APPENDINT <key> <path> <value>` - Append integer to a list
+//! - `AM.APPENDDOUBLE <key> <path> <value>` - Append double to a list
+//! - `AM.APPENDBOOL <key> <path> <value>` - Append boolean to a list
+//! - `AM.LISTLEN <key> <path>` - Get the length of a list
+//!
+//! # Path Syntax
+//!
+//! Paths support RedisJSON-compatible syntax:
+//! - Simple keys: `name`, `config`
+//! - Nested maps: `user.profile.name`, `data.settings.port`
+//! - Array indices: `users[0]`, `items[5].name`
+//! - JSONPath style: `$.user.name`, `$.items[0].title`
+//!
+//! # Examples
+//!
+//! ```redis
+//! # Create a new document
+//! AM.NEW mydoc
+//!
+//! # Set nested values
+//! AM.PUTTEXT mydoc user.name "Alice"
+//! AM.PUTINT mydoc user.age 30
+//!
+//! # Get values
+//! AM.GETTEXT mydoc user.name
+//! # Returns: "Alice"
+//!
+//! # Create and populate a list
+//! AM.CREATELIST mydoc tags
+//! AM.APPENDTEXT mydoc tags "redis"
+//! AM.APPENDTEXT mydoc tags "crdt"
+//! AM.GETTEXT mydoc tags[0]
+//! # Returns: "redis"
+//!
+//! # Save and reload
+//! AM.SAVE mydoc
+//! # Returns: <binary data>
+//! ```
+
 pub mod ext;
 
 use std::os::raw::{c_int, c_void};

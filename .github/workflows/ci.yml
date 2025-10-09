@@ -1,24 +1,118 @@
 name: CI
 
 on:
-  push:
-    branches: [main, master]
   pull_request:
+    branches: [ main, master ]
+  push:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   test:
+    name: Test Suite
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
-      - name: Run unit tests
-        run: cargo test --verbose
-        working-directory: redis-automerge
-      - name: Run integration test
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: redis-automerge/target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install dependencies
         run: |
-          docker compose run --build --rm test
-          docker compose down
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Run unit tests
+        run: cargo test --verbose --manifest-path redis-automerge/Cargo.toml
+
+      - name: Run clippy
+        run: cargo clippy --manifest-path redis-automerge/Cargo.toml -- -D warnings
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path redis-automerge/Cargo.toml -- --check
+
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker images
+        run: docker compose build
+
+      - name: Run integration tests
+        run: docker compose run --rm test
+
+      - name: Clean up
+        if: always()
+        run: docker compose down
+
+  build:
+    name: Build Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: redis-automerge/target
+          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Build release
+        run: cargo build --release --manifest-path redis-automerge/Cargo.toml
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: redis-automerge-module
+          path: redis-automerge/target/release/libredis_automerge.so
+          retention-days: 7

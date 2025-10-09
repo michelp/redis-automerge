@@ -1,4 +1,40 @@
-//! Extension trait and minimal implementation for working with Redis Automerge.
+//! Extension trait and implementation for integrating Automerge CRDT with Redis.
+//!
+//! This module provides the core functionality for managing Automerge documents
+//! within Redis, including:
+//! - JSON-like path operations with support for nested maps and arrays
+//! - Type-safe operations for text, integers, doubles, and booleans
+//! - List/array manipulation with append operations
+//! - Persistence and change tracking for Redis RDB and AOF
+//!
+//! # Path Syntax
+//!
+//! The module supports RedisJSON-compatible path syntax:
+//! - Simple keys: `"name"`, `"user"`
+//! - Nested maps: `"user.profile.name"`, `"data.config.port"`
+//! - Array indices: `"users[0]"`, `"items[5].name"`
+//! - JSONPath style: `"$.user.name"`, `"$.items[0].title"`
+//!
+//! # Examples
+//!
+//! ```rust,no_run
+//! use redis_automerge::ext::RedisAutomergeClient;
+//!
+//! let mut client = RedisAutomergeClient::new();
+//!
+//! // Set nested values
+//! client.put_text("user.name", "Alice").unwrap();
+//! client.put_int("user.age", 30).unwrap();
+//!
+//! // Create and populate a list
+//! client.create_list("items").unwrap();
+//! client.append_text("items", "first").unwrap();
+//! client.append_text("items", "second").unwrap();
+//!
+//! // Access list elements
+//! let value = client.get_text("items[0]").unwrap();
+//! assert_eq!(value, Some("first".to_string()));
+//! ```
 
 use automerge::{
     transaction::Transactable, Automerge, AutomergeError, Change, ObjId, ReadDoc, ScalarValue, Value, ROOT,
@@ -211,15 +247,48 @@ pub trait RedisAutomergeExt {
     fn commands(&mut self) -> Vec<Vec<u8>>;
 }
 
-/// Basic client holding an Automerge document and any changes which need to be
-/// persisted to the AOF stream.
+/// Client for managing an Automerge CRDT document with Redis-specific features.
+///
+/// This struct wraps an Automerge document and provides:
+/// - Path-based access to nested data structures (maps and lists)
+/// - Change tracking for AOF persistence
+/// - Type-safe operations for common data types
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use redis_automerge::ext::RedisAutomergeClient;
+///
+/// let mut client = RedisAutomergeClient::new();
+///
+/// // Work with nested maps
+/// client.put_text("config.host", "localhost").unwrap();
+/// client.put_int("config.port", 6379).unwrap();
+///
+/// // Work with lists
+/// client.create_list("tags").unwrap();
+/// client.append_text("tags", "redis").unwrap();
+/// client.append_text("tags", "crdt").unwrap();
+///
+/// // Retrieve values
+/// let host = client.get_text("config.host").unwrap();
+/// let tag = client.get_text("tags[0]").unwrap();
+/// ```
 pub struct RedisAutomergeClient {
     doc: Automerge,
     aof: Vec<Vec<u8>>,
 }
 
 impl RedisAutomergeClient {
-    /// Create a new client with an empty Automerge document.
+    /// Creates a new client with an empty Automerge document.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let client = RedisAutomergeClient::new();
+    /// ```
     pub fn new() -> Self {
         Self {
             doc: Automerge::new(),
@@ -227,8 +296,32 @@ impl RedisAutomergeClient {
         }
     }
 
-    /// Insert a text value using a path (e.g., "user.profile.name", "users[0].name", or "$.users[0].name").
-    /// Creates intermediate maps as needed. Array indices must already exist.
+    /// Inserts a text value at the specified path.
+    ///
+    /// Supports nested paths with automatic intermediate map creation.
+    /// Array indices in the path must already exist.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the field (e.g., "name", "user.profile.name", "users[0].name", "$.data.value")
+    /// * `value` - Text value to insert
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("user.name", "Alice").unwrap();
+    /// client.put_text("$.config.host", "localhost").unwrap();
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is invalid or empty
+    /// - An array index is out of bounds
+    /// - A path segment exists but is not an object
     pub fn put_text(&mut self, path: &str, value: &str) -> Result<(), AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
@@ -250,7 +343,28 @@ impl RedisAutomergeClient {
         Ok(())
     }
 
-    /// Retrieve a text value using a path (e.g., "user.profile.name", "users[0].name", or "$.users[0].name").
+    /// Retrieves a text value from the specified path.
+    ///
+    /// Returns `None` if the path doesn't exist or the value is not text.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the field
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("user.name", "Alice").unwrap();
+    ///
+    /// let name = client.get_text("user.name").unwrap();
+    /// assert_eq!(name, Some("Alice".to_string()));
+    ///
+    /// let missing = client.get_text("user.email").unwrap();
+    /// assert_eq!(missing, None);
+    /// ```
     pub fn get_text(&self, path: &str) -> Result<Option<String>, AutomergeError> {
         let segments = parse_path(path)?;
 
@@ -374,7 +488,7 @@ impl RedisAutomergeClient {
         Ok(None)
     }
 
-    /// Insert a boolean value using a path (e.g., "flags.active", "flags[0]", or "$.flags.active").
+    /// Insert a boolean value using a path (e.g., "flags.active", "flags\[0\]", or "$.flags.active").
     /// Creates intermediate maps as needed. Array indices must already exist.
     pub fn put_bool(&mut self, path: &str, value: bool) -> Result<(), AutomergeError> {
         let segments = parse_path(path)?;
@@ -397,7 +511,7 @@ impl RedisAutomergeClient {
         Ok(())
     }
 
-    /// Retrieve a boolean value using a path (e.g., "flags.active", "flags[0]", or "$.flags.active").
+    /// Retrieve a boolean value using a path (e.g., "flags.active", "flags\[0\]", or "$.flags.active").
     pub fn get_bool(&self, path: &str) -> Result<Option<bool>, AutomergeError> {
         let segments = parse_path(path)?;
 
@@ -423,8 +537,29 @@ impl RedisAutomergeClient {
         Ok(None)
     }
 
-    /// Create a new list at the specified path.
-    /// Example: create_list("users") creates an empty list at the root.
+    /// Creates a new empty list at the specified path.
+    ///
+    /// Creates intermediate maps as needed. The final segment must be a map key.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path where the list should be created
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.create_list("users").unwrap();
+    /// client.create_list("data.items").unwrap();
+    ///
+    /// assert_eq!(client.list_len("users").unwrap(), Some(0));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path is empty or the final segment is an array index.
     pub fn create_list(&mut self, path: &str) -> Result<(), AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
@@ -454,8 +589,32 @@ impl RedisAutomergeClient {
         Ok(())
     }
 
-    /// Append a text value to a list at the specified path.
-    /// Example: append_text("users", "Alice") appends "Alice" to the users list.
+    /// Appends a text value to the end of a list at the specified path.
+    ///
+    /// The list must already exist at the given path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the list
+    /// * `value` - Text value to append
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.create_list("users").unwrap();
+    /// client.append_text("users", "Alice").unwrap();
+    /// client.append_text("users", "Bob").unwrap();
+    ///
+    /// assert_eq!(client.get_text("users[0]").unwrap(), Some("Alice".to_string()));
+    /// assert_eq!(client.list_len("users").unwrap(), Some(2));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the path doesn't exist or doesn't point to a list.
     pub fn append_text(&mut self, path: &str, value: &str) -> Result<(), AutomergeError> {
         let segments = parse_path(path)?;
 
@@ -547,7 +706,27 @@ impl RedisAutomergeClient {
         Ok(())
     }
 
-    /// Get the length of a list at the specified path.
+    /// Returns the length of a list at the specified path.
+    ///
+    /// Returns `None` if the path doesn't exist or doesn't point to a list.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the list
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.create_list("items").unwrap();
+    /// client.append_text("items", "first").unwrap();
+    /// client.append_text("items", "second").unwrap();
+    ///
+    /// assert_eq!(client.list_len("items").unwrap(), Some(2));
+    /// assert_eq!(client.list_len("missing").unwrap(), None);
+    /// ```
     pub fn list_len(&self, path: &str) -> Result<Option<usize>, AutomergeError> {
         let segments = parse_path(path)?;
 

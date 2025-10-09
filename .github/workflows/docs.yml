@@ -1,0 +1,87 @@
+name: Documentation
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-docs:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-docs-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-index-docs-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Build documentation
+        run: cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml
+
+      - name: Add index redirect
+        run: |
+          echo '<meta http-equiv="refresh" content="0; url=redis_automerge/index.html">' > redis-automerge/target/doc/index.html
+
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: documentation
+          path: redis-automerge/target/doc
+          retention-days: 7
+
+      - name: Deploy to GitHub Pages
+        if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: redis-automerge/target/doc
+          force_orphan: true
+
+  check-docs:
+    name: Check Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      - name: Check documentation builds without warnings
+        run: cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml 2>&1 | tee doc-output.txt
+
+      - name: Check for documentation warnings
+        run: |
+          if grep -q "warning:" doc-output.txt; then
+            echo "⚠️  Documentation has warnings (non-blocking)"
+            grep "warning:" doc-output.txt || true
+          else
+            echo "✅ Documentation builds without warnings"
+          fi
