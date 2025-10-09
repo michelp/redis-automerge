@@ -371,7 +371,7 @@ docker compose down
 ### Online Documentation
 
 API documentation is automatically built and deployed to GitHub Pages:
-- **Latest docs**: `https://michelp.github.io/redis-automerge/`
+- **Latest docs**: [`https://michelp.github.io/redis-automerge/`](https://michelp.github.io/redis-automerge/`)
 
 Documentation is updated automatically on every push to main.
 
