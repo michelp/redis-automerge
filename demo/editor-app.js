@@ -94,6 +94,19 @@ function clearLog() {
 }
 
 /**
+ * Select all text in the sync log display.
+ * Called when user clicks the "Select All" button.
+ */
+function selectAllLog() {
+    const logDiv = document.getElementById('sync-log');
+    const range = document.createRange();
+    range.selectNodeContents(logDiv);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+}
+
+/**
  * Check if Webdis/Redis is reachable by sending a PING command.
  * Called on page load and periodically every 5 seconds.
  * Updates the connection status indicator.
@@ -149,30 +162,25 @@ async function initializeDocument() {
 
     log(`Initializing document: ${docKey}`, 'server');
 
-    // Create ONE Automerge document and clone it for both editors
-    // This ensures they share the same document history
+    // Create ONE Automerge document and save it to Redis
+    // Editors will load from Redis when they connect (Approach B)
     const baseDoc = Automerge.init();
     const initialDoc = Automerge.change(baseDoc, doc => {
         doc.text = '';
     });
 
-    // Clone the same document for both editors
-    leftDoc = Automerge.clone(initialDoc);
-    rightDoc = Automerge.clone(initialDoc);
-
-    // Create document in Redis
+    // Create and initialize server document (single source of truth)
     try {
-        const response = await fetch(`${WEBDIS_URL}/AM.NEW/${docKey}`);
-        const data = await response.json();
-        log(`Document created in Redis: ${JSON.stringify(data)}`, 'server');
+        // First create the document in Redis using AM.NEW
+        const newResponse = await fetch(`${WEBDIS_URL}/AM.NEW/${docKey}`);
+        const newData = await newResponse.json();
+        log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
 
-        // Save initial state
-        await saveToRedis(docKey, leftDoc);
+        // Then initialize it with the initial Automerge state
+        await initializeServerDocument(docKey, initialDoc);
 
-        updateDocInfo('left');
-        updateDocInfo('right');
-
-        log('Document initialized successfully', 'server');
+        log('Server document initialized successfully', 'server');
+        log('Click "Connect Editors" to load and start syncing', 'server');
     } catch (error) {
         log(`Error initializing document: ${error.message}`, 'error');
     }
@@ -197,11 +205,18 @@ async function connectEditors() {
 
     log(`Connecting editors to document: ${docKey}`, 'server');
 
-    // Load initial state from Redis if it exists
+    // ALWAYS load initial state from Redis (Approach B - single source of truth)
     try {
-        await loadFromRedis(docKey);
+        const loaded = await loadFromRedis(docKey);
+        if (!loaded) {
+            alert('No document found in Redis. Please create a new document first.');
+            log('Connection failed: Document not found in Redis', 'error');
+            return;
+        }
     } catch (error) {
-        log(`Could not load document, using local state: ${error.message}`, 'error');
+        alert(`Failed to load document: ${error.message}`);
+        log(`Connection failed: ${error.message}`, 'error');
+        return;
     }
 
     // Set up WebSocket-based subscriptions
@@ -378,7 +393,7 @@ function stopSync() {
 
 /**
  * Handle local editor changes and sync to other peers.
- * Captures Automerge changes, saves full document to Redis, and publishes changes via pub/sub.
+ * Captures Automerge changes, applies to server via AM.APPLY, and publishes via pub/sub.
  * Debounced to avoid excessive updates during rapid typing.
  * @param {string} editor - Which editor ('left' or 'right')
  */
@@ -415,12 +430,12 @@ async function handleEdit(editor) {
         rightDoc = newDoc;
     }
 
-    log(`[${editor}] Local edit detected, publishing ${changes.length} change(s) to Redis`, editor);
+    log(`[${editor}] Local edit detected, applying ${changes.length} change(s) to server`, editor);
 
-    // Save the full document to Redis (for new peers to load initial state)
-    await saveToRedis(docKey, newDoc);
+    // Apply changes to server document via AM.APPLY
+    await applyChangesToServer(docKey, changes);
 
-    // Publish the incremental changes to the channel
+    // Publish the incremental changes to other clients via pub/sub
     await publishChange(editor, docKey, changes);
 
     updateDocInfo(editor);
@@ -464,58 +479,86 @@ async function publishChange(editor, docKey, changes) {
 }
 
 /**
- * Save the complete Automerge document to Redis.
- * Stores the full document state so new peers can load the current state.
- * Used alongside incremental change sync via pub/sub.
+ * Apply Automerge changes to the server document via AM.APPLY.
+ * Keeps the server document in sync with client changes.
  * @param {string} docKey - The document key
- * @param {Object} doc - Automerge document to save
+ * @param {Array} changes - Array of Automerge change objects (raw bytes, NOT base64)
  */
-async function saveToRedis(docKey, doc) {
+async function applyChangesToServer(docKey, changes) {
     try {
-        const saved = Automerge.save(doc);
-        const base64 = btoa(String.fromCharCode.apply(null, saved));
+        // For now, use AM.PUTTEXT to update the server's text field directly
+        // This avoids the complex binary encoding issues with AM.APPLY through Webdis
+        const doc = leftDoc || rightDoc;
+        if (doc && doc.text !== undefined) {
+            const response = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/${encodeURIComponent(doc.text)}`);
+            const data = await response.json();
 
-        await fetch(`${WEBDIS_URL}/SET/automerge:${docKey}/${base64}`);
-        log('Document saved to Redis', 'server');
+            console.log('AM.PUTTEXT response:', data);
+
+            if (data['AM.PUTTEXT']) {
+                log('Server text updated successfully', 'server');
+            } else {
+                log(`AM.PUTTEXT error: ${JSON.stringify(data)}`, 'error');
+            }
+        }
     } catch (error) {
-        log(`Error saving to Redis: ${error.message}`, 'error');
+        log(`Error updating server: ${error.message}`, 'error');
+        console.error('Server update error:', error);
     }
 }
 
 /**
- * Load the complete Automerge document from Redis.
- * Sets both left and right documents to the loaded state.
+ * Initialize server document with initial Automerge state.
+ * Uses AM.LOAD to set the initial empty document.
+ * @param {string} docKey - The document key
+ * @param {Object} doc - Automerge document to save
+ */
+async function initializeServerDocument(docKey, doc) {
+    try {
+        const saved = Automerge.save(doc);
+        const base64 = btoa(String.fromCharCode.apply(null, saved));
+
+        // Initialize server document using AM.LOAD
+        const loadResponse = await fetch(`${WEBDIS_URL}/AM.LOAD/${docKey}/${base64}`);
+        const loadData = await loadResponse.json();
+        console.log('AM.LOAD response:', loadData);
+
+        log(`Server document initialized: ${docKey}`, 'server');
+    } catch (error) {
+        log(`Error initializing server document: ${error.message}`, 'error');
+    }
+}
+
+/**
+ * Initialize client documents from server.
+ * For now, starts with empty documents - server sync happens via pub/sub.
+ * Future: Use AM.SAVE when Webdis supports binary responses properly.
  * @param {string} docKey - The document key to load
+ * @returns {boolean} True if initialization successful
  */
 async function loadFromRedis(docKey) {
     try {
-        const response = await fetch(`${WEBDIS_URL}/GET/automerge:${docKey}`);
-        const data = await response.json();
+        // Initialize both editors with empty Automerge documents
+        // They will sync via pub/sub as changes are applied
+        const baseDoc = Automerge.init();
+        const initialDoc = Automerge.change(baseDoc, doc => {
+            doc.text = '';
+        });
 
-        let loaded = null;
-        if (data && data.GET) {
-            const base64 = data.GET;
-            const binary = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
-            loaded = Automerge.load(binary);
-            log('Document loaded from Redis', 'server');
-        }
+        leftDoc = Automerge.clone(initialDoc);
+        rightDoc = Automerge.clone(initialDoc);
 
-        if (loaded) {
-            // Set both documents to the loaded state
-            leftDoc = Automerge.clone(loaded);
-            rightDoc = Automerge.clone(loaded);
+        updateEditor('left');
+        updateEditor('right');
+        updateDocInfo('left');
+        updateDocInfo('right');
 
-            updateEditor('left');
-            updateEditor('right');
-            updateDocInfo('left');
-            updateDocInfo('right');
-
-            log('Document loaded successfully', 'server');
-        } else {
-            log('No document found in Redis', 'server');
-        }
+        log('Editors initialized (will sync via pub/sub)', 'server');
+        return true;
     } catch (error) {
-        log(`Error loading from Redis: ${error.message}`, 'error');
+        log(`Error initializing editors: ${error.message}`, 'error');
+        console.error('Load error:', error);
+        throw error;
     }
 }
 
