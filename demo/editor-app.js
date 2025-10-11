@@ -432,8 +432,8 @@ async function handleEdit(editor) {
 
     log(`[${editor}] Local edit detected, applying ${changes.length} change(s) to server`, editor);
 
-    // Apply changes to server document via AM.APPLY
-    await applyChangesToServer(docKey, changes);
+    // Apply changes to server document via AM.PUTTEXT
+    await applyChangesToServer(docKey, newDoc);
 
     // Publish the incremental changes to other clients via pub/sub
     await publishChange(editor, docKey, changes);
@@ -479,16 +479,15 @@ async function publishChange(editor, docKey, changes) {
 }
 
 /**
- * Apply Automerge changes to the server document via AM.APPLY.
- * Keeps the server document in sync with client changes.
+ * Update the server document with the current text.
+ * Uses AM.PUTTEXT to keep the server's text field in sync.
  * @param {string} docKey - The document key
- * @param {Array} changes - Array of Automerge change objects (raw bytes, NOT base64)
+ * @param {Object} doc - The Automerge document with the current state
  */
-async function applyChangesToServer(docKey, changes) {
+async function applyChangesToServer(docKey, doc) {
     try {
-        // For now, use AM.PUTTEXT to update the server's text field directly
+        // Use AM.PUTTEXT to update the server's text field directly
         // This avoids the complex binary encoding issues with AM.APPLY through Webdis
-        const doc = leftDoc || rightDoc;
         if (doc && doc.text !== undefined) {
             const response = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/${encodeURIComponent(doc.text)}`);
             const data = await response.json();
@@ -496,7 +495,7 @@ async function applyChangesToServer(docKey, changes) {
             console.log('AM.PUTTEXT response:', data);
 
             if (data['AM.PUTTEXT']) {
-                log('Server text updated successfully', 'server');
+                // log('Server text updated successfully', 'server');
             } else {
                 log(`AM.PUTTEXT error: ${JSON.stringify(data)}`, 'error');
             }
