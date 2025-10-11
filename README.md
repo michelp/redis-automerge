@@ -57,17 +57,23 @@ docker compose up
 # Access Webdis API at http://localhost:7379
 ```
 
-## Demo Application
+## Demo Applications
 
-A web-based interactive demo is available at `http://localhost:8080` when running `docker compose up`.
+Web-based interactive demos are available at `http://localhost:8080` when running `docker compose up`.
 
-The demo provides:
+### Main Demo
 - Interactive UI for all Redis-Automerge commands
 - Real-time command logging
 - Pre-built examples (user profiles, shopping carts, configuration)
 - Support for nested paths and all data types
 
-See [demo/README.md](demo/README.md) for details.
+### Collaborative Editor
+- Real-time collaborative text editor with side-by-side panes
+- Demonstrates Automerge CRDT synchronization
+- Local-first architecture with automatic conflict resolution
+- Live sync via Redis pub/sub
+
+See [demo/README.md](demo/README.md) and [demo/COLLABORATIVE_EDITOR.md](demo/COLLABORATIVE_EDITOR.md) for details.
 
 ## Redis Commands
 
