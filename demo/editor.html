@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Collaborative Editor - Redis-Automerge</title>
+    <link rel="stylesheet" href="editor-style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>🔴 Collaborative Editor Demo</h1>
+        <p>Real-time CRDT synchronization with Automerge</p>
+        <div class="controls">
+            <input type="text" id="doc-key" placeholder="Document key" value="collab-doc">
+            <button id="create-btn" onclick="initializeDocument()">Create New Document</button>
+            <button id="connect-btn" onclick="connectEditors()">Connect Editors</button>
+            <button onclick="window.location.href='index.html'">← Back to Main Demo</button>
+        </div>
+        <div class="status-bar">
+            <span id="connection-status" class="status-disconnected">Disconnected</span>
+            <span id="sync-status">Not syncing</span>
+            <span id="doc-version-left">Left: v0</span>
+            <span id="doc-version-right">Right: v0</span>
+        </div>
+    </div>
+
+    <div class="editor-container">
+        <div class="editor-pane">
+            <div class="pane-header">
+                <h2>Editor A</h2>
+                <span id="peer-id-left" class="peer-id">Peer ID: ...</span>
+            </div>
+            <div class="editor-wrapper">
+                <textarea id="editor-left" placeholder="Start typing..."></textarea>
+            </div>
+            <div class="info-panel">
+                <h3>Local State</h3>
+                <div id="info-left" class="info-content"></div>
+            </div>
+        </div>
+
+        <div class="sync-indicator">
+            <div class="sync-arrow">⟷</div>
+            <div class="sync-label">Real-time Sync</div>
+        </div>
+
+        <div class="editor-pane">
+            <div class="pane-header">
+                <h2>Editor B</h2>
+                <span id="peer-id-right" class="peer-id">Peer ID: ...</span>
+            </div>
+            <div class="editor-wrapper">
+                <textarea id="editor-right" placeholder="Start typing..."></textarea>
+            </div>
+            <div class="info-panel">
+                <h3>Local State</h3>
+                <div id="info-right" class="info-content"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="log-container">
+        <div class="log-header">
+            <h3>Sync Log</h3>
+            <button onclick="clearLog()">Clear</button>
+        </div>
+        <div id="sync-log" class="sync-log"></div>
+    </div>
+
+    <div class="instructions">
+        <h3>How It Works</h3>
+        <ol>
+            <li><strong>Create Document:</strong> Initialize a new Automerge document in Redis</li>
+            <li><strong>Connect Editors:</strong> Both editors sync with Redis and subscribe to changes</li>
+            <li><strong>Type in Either Editor:</strong> Changes are automatically synced via Redis Pub/Sub</li>
+            <li><strong>Local-First:</strong> Each editor maintains its own Automerge document copy</li>
+            <li><strong>Conflict Resolution:</strong> Automerge CRDT handles concurrent edits automatically</li>
+        </ol>
+        <p><strong>Try it:</strong> Type in both editors simultaneously to see conflict-free merging in action!</p>
+    </div>
+
+    <!-- Use Automerge from CDN - Using the stable 1.x version for browser compatibility -->
+    <script src="https://cdn.jsdelivr.net/npm/automerge@1.0.1-preview.7/dist/automerge.js"></script>
+    <script src="editor-app.js" defer></script>
+</body>
+</html>

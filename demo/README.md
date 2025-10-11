@@ -2,6 +2,16 @@
 
 A web-based demo application for interacting with Redis-Automerge through the Webdis HTTP interface.
 
+## Demo Applications
+
+### 1. Main Demo (index.html)
+Interactive command interface for testing all Redis-Automerge operations.
+
+### 2. Collaborative Editor (editor.html)
+Real-time collaborative text editor demonstrating CRDT synchronization with side-by-side editors.
+
+**[See Collaborative Editor Documentation →](COLLABORATIVE_EDITOR.md)**
+
 ## Features
 
 - **Interactive UI** for all Redis-Automerge commands
@@ -11,6 +21,7 @@ A web-based demo application for interacting with Redis-Automerge through the We
 - **Support for all data types**: text, integers, doubles, booleans
 - **List operations** with append and length queries
 - **Nested path syntax** support (e.g., `user.profile.name`, `items[0]`)
+- **Collaborative Editor** with live CRDT synchronization
 
 ## Quick Start
 
