@@ -169,17 +169,14 @@ async function initializeDocument() {
         doc.text = '';
     });
 
-    // Create and initialize server document (single source of truth)
+    // Create server document (single source of truth)
     try {
-        // First create the document in Redis using AM.NEW
+        // Create the document in Redis using AM.NEW (starts empty)
         const newResponse = await fetch(`${WEBDIS_URL}/AM.NEW/${docKey}`);
         const newData = await newResponse.json();
         log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
 
-        // Then initialize it with the initial Automerge state
-        await initializeServerDocument(docKey, initialDoc);
-
-        log('Server document initialized successfully', 'server');
+        log('Server document created successfully', 'server');
         log('Click "Connect Editors" to load and start syncing', 'server');
     } catch (error) {
         log(`Error initializing document: ${error.message}`, 'error');
@@ -237,6 +234,7 @@ async function connectEditors() {
  */
 function setupWebSocket(editor, docKey) {
     const channel = `${SYNC_CHANNEL}:${docKey}`;
+    const keyspaceChannel = `__keyspace@0__:${docKey}`;
     const peerId = editor === 'left' ? leftPeerId : rightPeerId;
 
     // Create WebSocket connection - Webdis uses /.json endpoint for WebSocket
@@ -245,10 +243,15 @@ function setupWebSocket(editor, docKey) {
     ws.onopen = () => {
         log(`[${editor}] WebSocket connected`, editor);
 
-        // Subscribe to the sync channel - Send as JSON array
+        // Subscribe to the sync channel (for peer changes)
         const subscribeCmd = JSON.stringify(['SUBSCRIBE', channel]);
         ws.send(subscribeCmd);
         log(`[${editor}] Subscribed to ${channel}`, editor);
+
+        // Subscribe to keyspace notifications (for external changes to the Redis key)
+        const keyspaceCmd = JSON.stringify(['SUBSCRIBE', keyspaceChannel]);
+        ws.send(keyspaceCmd);
+        log(`[${editor}] Subscribed to ${keyspaceChannel}`, editor);
     };
 
     ws.onmessage = (event) => {
@@ -262,17 +265,36 @@ function setupWebSocket(editor, docKey) {
                 if (data[0] === 'subscribe') {
                     log(`[${editor}] Subscription confirmed for ${data[1]}`, editor);
                 } else if (data[0] === 'message') {
-                    // Webdis sends messages under SUBSCRIBE key as well
+                    const channelName = data[1];
                     const messageData = data[2];
-                    log(`[${editor}] Received pub/sub message`, editor);
-                    handleIncomingMessage(editor, messageData, peerId);
+
+                    // Check if this is a keyspace notification or regular pub/sub message
+                    if (channelName.startsWith('__keyspace@')) {
+                        // Keyspace notification - external change to the Redis key
+                        log(`[${editor}] Keyspace event: ${messageData}`, editor);
+                        handleKeyspaceNotification(editor, docKey, messageData);
+                    } else {
+                        // Regular pub/sub message from another editor
+                        log(`[${editor}] Received pub/sub message`, editor);
+                        handleIncomingMessage(editor, messageData, peerId);
+                    }
                 }
             } else if (response.MESSAGE) {
                 const data = response.MESSAGE;
                 if (data[0] === 'message') {
+                    const channelName = data[1];
                     const messageData = data[2];
-                    log(`[${editor}] Received pub/sub message`, editor);
-                    handleIncomingMessage(editor, messageData, peerId);
+
+                    // Check if this is a keyspace notification or regular pub/sub message
+                    if (channelName.startsWith('__keyspace@')) {
+                        // Keyspace notification - external change to the Redis key
+                        log(`[${editor}] Keyspace event: ${messageData}`, editor);
+                        handleKeyspaceNotification(editor, docKey, messageData);
+                    } else {
+                        // Regular pub/sub message from another editor
+                        log(`[${editor}] Received pub/sub message`, editor);
+                        handleIncomingMessage(editor, messageData, peerId);
+                    }
                 }
             } else {
                 log(`[${editor}] Unknown message type: ${JSON.stringify(response)}`, editor);
@@ -306,6 +328,55 @@ function setupWebSocket(editor, docKey) {
         leftSocket = ws;
     } else {
         rightSocket = ws;
+    }
+}
+
+/**
+ * Handle keyspace notification events from Redis.
+ * Called when an external client modifies the document.
+ * @param {string} editor - Which editor ('left' or 'right')
+ * @param {string} docKey - The document key
+ * @param {string} command - The Redis command that triggered the notification (e.g., "am.puttext")
+ */
+async function handleKeyspaceNotification(editor, docKey, command) {
+    try {
+        console.log(`[${editor}] Keyspace notification: ${command} on ${docKey}`);
+
+        // Fetch the current text from the server
+        const response = await fetch(`${WEBDIS_URL}/AM.GETTEXT/${docKey}/text`);
+        const data = await response.json();
+
+        if (data && data['AM.GETTEXT']) {
+            const serverText = data['AM.GETTEXT'];
+            console.log(`[${editor}] Fetched server text:`, serverText);
+
+            // Get current document
+            const currentDoc = editor === 'left' ? leftDoc : rightDoc;
+
+            // Only update if the server text is different from local
+            if (currentDoc && currentDoc.text !== serverText) {
+                log(`[${editor}] External change detected, updating from server`, editor);
+
+                // Update the local document
+                const newDoc = Automerge.change(currentDoc, doc => {
+                    doc.text = serverText;
+                });
+
+                // Update the document reference
+                if (editor === 'left') {
+                    leftDoc = newDoc;
+                } else {
+                    rightDoc = newDoc;
+                }
+
+                // Update the editor UI
+                updateEditor(editor);
+                updateDocInfo(editor);
+            }
+        }
+    } catch (error) {
+        log(`[${editor}] Error handling keyspace notification: ${error.message}`, 'error');
+        console.error('Keyspace notification error:', error);
     }
 }
 
@@ -486,15 +557,21 @@ async function publishChange(editor, docKey, changes) {
  */
 async function applyChangesToServer(docKey, doc) {
     try {
-        // Use AM.PUTTEXT to update the server's text field directly
-        // This avoids the complex binary encoding issues with AM.APPLY through Webdis
+        // Use AM.PUTTEXT via PUT to update the server's text field directly
+        // Webdis PUT format: PUT /COMMAND/arg1/arg2/... with body as last argument
         if (doc && doc.text !== undefined) {
-            const response = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/${encodeURIComponent(doc.text)}`);
+            const response = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: doc.text
+            });
             const data = await response.json();
 
             console.log('AM.PUTTEXT response:', data);
 
-            if (data['AM.PUTTEXT']) {
+            if (data['AM.PUTTEXT'] && data['AM.PUTTEXT'][0] === true) {
                 // log('Server text updated successfully', 'server');
             } else {
                 log(`AM.PUTTEXT error: ${JSON.stringify(data)}`, 'error');
@@ -503,28 +580,6 @@ async function applyChangesToServer(docKey, doc) {
     } catch (error) {
         log(`Error updating server: ${error.message}`, 'error');
         console.error('Server update error:', error);
-    }
-}
-
-/**
- * Initialize server document with initial Automerge state.
- * Uses AM.LOAD to set the initial empty document.
- * @param {string} docKey - The document key
- * @param {Object} doc - Automerge document to save
- */
-async function initializeServerDocument(docKey, doc) {
-    try {
-        const saved = Automerge.save(doc);
-        const base64 = btoa(String.fromCharCode.apply(null, saved));
-
-        // Initialize server document using AM.LOAD
-        const loadResponse = await fetch(`${WEBDIS_URL}/AM.LOAD/${docKey}/${base64}`);
-        const loadData = await loadResponse.json();
-        console.log('AM.LOAD response:', loadData);
-
-        log(`Server document initialized: ${docKey}`, 'server');
-    } catch (error) {
-        log(`Error initializing server document: ${error.message}`, 'error');
     }
 }
 

@@ -134,6 +134,8 @@ fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let key = ctx.open_key_writable(&key_name);
     key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
+    ctx.replicate("am.load", &[&key_name, &data]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.load", &key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -145,6 +147,7 @@ fn am_new(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let key = ctx.open_key_writable(key_name);
     key.set_value(&REDIS_AUTOMERGE_TYPE, RedisAutomergeClient::new())?;
     ctx.replicate("am.new", &[key_name]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.new", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -174,6 +177,7 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.puttext", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttext", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -214,6 +218,7 @@ fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putint", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putint", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -254,6 +259,7 @@ fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putdouble", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdouble", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -297,6 +303,7 @@ fn am_putbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putbool", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putbool", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -334,6 +341,7 @@ fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.createlist", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.createlist", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -353,6 +361,7 @@ fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendtext", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendtext", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -374,6 +383,7 @@ fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendint", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendint", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -395,6 +405,7 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appenddouble", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appenddouble", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -419,6 +430,7 @@ fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendbool", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendbool", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -462,6 +474,7 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_err(|e| RedisError::String(e.to_string()))?;
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.apply", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.apply", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 

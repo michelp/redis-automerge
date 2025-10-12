@@ -8,4 +8,10 @@ RUN cargo build --release --manifest-path redis-automerge/Cargo.toml
 # Runtime image with Redis and the compiled module
 FROM redis:7
 COPY --from=builder /build/redis-automerge/target/release/libredis_automerge.so /usr/lib/redis/modules/redis-automerge.so
-CMD ["redis-server", "--loadmodule", "/usr/lib/redis/modules/redis-automerge.so"]
+CMD ["redis-server", \
+     "--loadmodule", "/usr/lib/redis/modules/redis-automerge.so", \
+     "--loglevel", "notice", \
+     "--logfile", "", \
+     "--slowlog-log-slower-than", "0", \
+     "--slowlog-max-len", "128", \
+     "--notify-keyspace-events", "AKEm"]
