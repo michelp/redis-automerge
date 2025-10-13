@@ -876,5 +876,100 @@ redis-cli -h "$HOST" am.puttext temp_doc field "value"
 redis-cli -h "$HOST" del temp_doc
 echo "   ✓ AM.APPLY command exists (full change application test requires extracting changes)"
 
+# Helper function for assertions
+assert_equals() {
+    local expected=$1
+    local actual=$2
+    local message=$3
+
+    if [ "$expected" != "$actual" ]; then
+        echo "   ✗ $message"
+        echo "      Expected: $expected"
+        echo "      Actual: $actual"
+        exit 1
+    fi
+}
+
+# Test: Create room with specific key
+test_create_room() {
+    echo "Test: Create room"
+
+    ROOM_KEY="am:room:test-room-$$"
+
+    # Create room
+    RESULT=$(redis-cli -h "$HOST" AM.NEW "$ROOM_KEY")
+    assert_equals "OK" "$RESULT" "Room creation failed"
+
+    # Initialize text field
+    RESULT=$(redis-cli -h "$HOST" AM.PUTTEXT "$ROOM_KEY" text "")
+    assert_equals "OK" "$RESULT" "Text initialization failed"
+
+    # Verify room exists
+    RESULT=$(redis-cli -h "$HOST" EXISTS "$ROOM_KEY")
+    assert_equals "1" "$RESULT" "Room doesn't exist"
+
+    echo "   ✓ Room creation works"
+}
+
+# Test: Join existing room
+test_join_room() {
+    echo "Test: Join existing room"
+
+    ROOM_KEY="am:room:join-test-$$"
+
+    # Create room
+    redis-cli -h "$HOST" AM.NEW "$ROOM_KEY" > /dev/null
+    redis-cli -h "$HOST" AM.PUTTEXT "$ROOM_KEY" text "Hello" > /dev/null
+
+    # Simulate second client fetching text
+    RESULT=$(redis-cli -h "$HOST" --raw AM.GETTEXT "$ROOM_KEY" text)
+    assert_equals "Hello" "$RESULT" "Failed to fetch room text"
+
+    echo "   ✓ Room joining works"
+}
+
+# Test: Room list via KEYS
+test_room_list() {
+    echo "Test: Room list"
+
+    # Create multiple rooms
+    redis-cli -h "$HOST" AM.NEW "am:room:list-test-1" > /dev/null
+    redis-cli -h "$HOST" AM.NEW "am:room:list-test-2" > /dev/null
+    redis-cli -h "$HOST" AM.NEW "am:room:list-test-3" > /dev/null
+
+    # Fetch room list
+    RESULT=$(redis-cli -h "$HOST" KEYS "am:room:list-test-*" | wc -l)
+
+    if [ "$RESULT" -ge 3 ]; then
+        echo "   ✓ Room list works (found $RESULT rooms)"
+    else
+        echo "   ✗ Room list failed (found $RESULT rooms, expected >= 3)"
+        exit 1
+    fi
+}
+
+# Test: Keyspace notifications
+test_keyspace_notifications() {
+    echo "Test: Keyspace notifications"
+
+    # Check if keyspace notifications enabled
+    RESULT=$(redis-cli -h "$HOST" CONFIG GET notify-keyspace-events | tail -1)
+
+    if echo "$RESULT" | grep -q "K"; then
+        echo "   ✓ Keyspace notifications enabled: $RESULT"
+    else
+        echo "   ✗ Keyspace notifications not enabled: $RESULT"
+        exit 1
+    fi
+}
+
+# Run shareable mode tests
+echo ""
+echo "=== Shareable Mode Tests ==="
+test_keyspace_notifications
+test_create_room
+test_join_room
+test_room_list
+
 echo ""
 echo "✅ All integration tests passed!"
