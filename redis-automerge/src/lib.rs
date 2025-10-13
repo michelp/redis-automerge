@@ -185,9 +185,9 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -241,9 +241,9 @@ fn am_putdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -280,9 +280,9 @@ fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -338,9 +338,9 @@ fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -399,9 +399,9 @@ fn am_putbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -454,9 +454,9 @@ fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -491,9 +491,9 @@ fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -530,9 +530,9 @@ fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -569,9 +569,9 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -579,7 +579,11 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appenddouble", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appenddouble", key_name);
+    ctx.notify_keyspace_event(
+        redis_module::NotifyEvent::MODULE,
+        "am.appenddouble",
+        key_name,
+    );
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -611,9 +615,9 @@ fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(change) = change_bytes {
         let channel_name = format!("changes:{}", key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
-        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let ctx_ptr = std::ptr::NonNull::new(ctx.ctx);
         let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
         let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
         ctx.call("PUBLISH", &[&channel_str, &change_str])?;
@@ -1199,9 +1203,15 @@ mod tests {
         let mut client1 = RedisAutomergeClient::new();
 
         // Make several changes
-        let change1 = client1.put_text_with_change("name", "Alice").unwrap().unwrap();
+        let change1 = client1
+            .put_text_with_change("name", "Alice")
+            .unwrap()
+            .unwrap();
         let change2 = client1.put_int_with_change("age", 30).unwrap().unwrap();
-        let change3 = client1.put_bool_with_change("active", true).unwrap().unwrap();
+        let change3 = client1
+            .put_bool_with_change("active", true)
+            .unwrap()
+            .unwrap();
 
         // Apply all changes to client2
         let mut client2 = RedisAutomergeClient::new();

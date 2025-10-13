@@ -62,12 +62,12 @@ fn parse_unified_diff(diff: &str) -> Result<Vec<DiffOp>, AutomergeError> {
             continue;
         }
 
-        if line.starts_with('-') {
-            ops.push(DiffOp::Delete(line[1..].to_string()));
-        } else if line.starts_with('+') {
-            ops.push(DiffOp::Add(line[1..].to_string()));
-        } else if line.starts_with(' ') {
-            ops.push(DiffOp::Context(line[1..].to_string()));
+        if let Some(stripped) = line.strip_prefix('-') {
+            ops.push(DiffOp::Delete(stripped.to_string()));
+        } else if let Some(stripped) = line.strip_prefix('+') {
+            ops.push(DiffOp::Add(stripped.to_string()));
+        } else if let Some(stripped) = line.strip_prefix(' ') {
+            ops.push(DiffOp::Context(stripped.to_string()));
         } else if !line.is_empty() {
             // Treat lines without prefix as context (for compatibility)
             ops.push(DiffOp::Context(line.to_string()));
@@ -482,9 +482,11 @@ impl RedisAutomergeClient {
     ///     // Publish to other clients
     /// }
     /// ```
-    pub fn put_text_with_change(&mut self, path: &str, value: &str)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn put_text_with_change(
+        &mut self,
+        path: &str,
+        value: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
 
@@ -561,9 +563,11 @@ impl RedisAutomergeClient {
     }
 
     /// Insert an integer value and return the raw change bytes.
-    pub fn put_int_with_change(&mut self, path: &str, value: i64)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn put_int_with_change(
+        &mut self,
+        path: &str,
+        value: i64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
 
@@ -612,9 +616,11 @@ impl RedisAutomergeClient {
     }
 
     /// Insert a double value and return the raw change bytes.
-    pub fn put_double_with_change(&mut self, path: &str, value: f64)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn put_double_with_change(
+        &mut self,
+        path: &str,
+        value: f64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
 
@@ -719,9 +725,11 @@ impl RedisAutomergeClient {
     }
 
     /// Insert a boolean value and return the raw change bytes.
-    pub fn put_bool_with_change(&mut self, path: &str, value: bool)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn put_bool_with_change(
+        &mut self,
+        path: &str,
+        value: bool,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
 
@@ -852,9 +860,11 @@ impl RedisAutomergeClient {
     }
 
     /// Apply a unified diff and return the raw change bytes.
-    pub fn put_diff_with_change(&mut self, path: &str, diff: &str)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn put_diff_with_change(
+        &mut self,
+        path: &str,
+        diff: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
 
         if segments.is_empty() {
@@ -973,9 +983,10 @@ impl RedisAutomergeClient {
     }
 
     /// Create a new empty list and return the raw change bytes.
-    pub fn create_list_with_change(&mut self, path: &str)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn create_list_with_change(
+        &mut self,
+        path: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
         let mut tx = self.doc.transaction();
 
@@ -1057,9 +1068,11 @@ impl RedisAutomergeClient {
     }
 
     /// Append a text value to a list and return the raw change bytes.
-    pub fn append_text_with_change(&mut self, path: &str, value: &str)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn append_text_with_change(
+        &mut self,
+        path: &str,
+        value: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
 
         // Navigate before creating transaction
@@ -1109,9 +1122,11 @@ impl RedisAutomergeClient {
     }
 
     /// Append an integer value to a list and return the raw change bytes.
-    pub fn append_int_with_change(&mut self, path: &str, value: i64)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn append_int_with_change(
+        &mut self,
+        path: &str,
+        value: i64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
 
         // Navigate before creating transaction
@@ -1161,9 +1176,11 @@ impl RedisAutomergeClient {
     }
 
     /// Append a double value to a list and return the raw change bytes.
-    pub fn append_double_with_change(&mut self, path: &str, value: f64)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn append_double_with_change(
+        &mut self,
+        path: &str,
+        value: f64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
 
         // Navigate before creating transaction
@@ -1213,9 +1230,11 @@ impl RedisAutomergeClient {
     }
 
     /// Append a boolean value to a list and return the raw change bytes.
-    pub fn append_bool_with_change(&mut self, path: &str, value: bool)
-        -> Result<Option<Vec<u8>>, AutomergeError>
-    {
+    pub fn append_bool_with_change(
+        &mut self,
+        path: &str,
+        value: bool,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
         let segments = parse_path(path)?;
 
         // Navigate before creating transaction
