@@ -217,6 +217,476 @@ const EditorCore = {
     }
 };
 
+// ============================================================================
+// ShareableMode - Single editor with room management
+// ============================================================================
+const ShareableMode = {
+    doc: null,
+    peerId: null,
+    socket: null,
+    roomListSocket: null,
+    prevText: '',
+    currentRoom: null,
+    roomList: [],
+
+    /**
+     * Initialize shareable mode
+     */
+    async initialize() {
+        this.peerId = EditorCore.generatePeerId();
+        document.getElementById('peer-id-shareable').textContent = `Peer ID: ${this.peerId.slice(0, 8)}`;
+
+        // Check for room in URL
+        const urlRoom = this.parseUrlRoom();
+        if (urlRoom) {
+            EditorCore.log(`Room from URL: ${urlRoom}`, 'shareable');
+            // Auto-select shareable tab
+            switchMode('shareable');
+            // Show room but don't auto-join (user clicks to join)
+            await this.refreshRoomList();
+        } else {
+            await this.refreshRoomList();
+        }
+
+        // Subscribe to room list updates
+        this.subscribeToRoomEvents();
+    },
+
+    /**
+     * Parse room name from URL parameters
+     * @returns {string|null} Room name or null
+     */
+    parseUrlRoom() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('room');
+    },
+
+    /**
+     * Generate a random 8-character room ID
+     * @returns {string} Random room ID
+     */
+    generateRoomId() {
+        return Math.random().toString(36).substring(2, 10);
+    },
+
+    /**
+     * Create a new room with random ID
+     */
+    async createRandomRoom() {
+        const roomId = this.generateRoomId();
+        await this.createRoom(roomId);
+    },
+
+    /**
+     * Create a new room with custom name
+     */
+    async createCustomRoom() {
+        const input = document.getElementById('custom-room-name');
+        const roomName = input.value.trim();
+
+        if (!roomName) {
+            alert('Please enter a room name');
+            return;
+        }
+
+        if (!this.validateRoomName(roomName)) {
+            alert('Room name must be 1-50 characters (letters, numbers, dash, underscore only)');
+            return;
+        }
+
+        input.value = '';
+        await this.createRoom(roomName);
+    },
+
+    /**
+     * Validate room name format
+     * @param {string} name - Room name to validate
+     * @returns {boolean} True if valid
+     */
+    validateRoomName(name) {
+        return /^[a-zA-Z0-9_-]{1,50}$/.test(name);
+    },
+
+    /**
+     * Create a new room
+     * @param {string} roomName - The room name
+     */
+    async createRoom(roomName) {
+        const docKey = `am:room:${roomName}`;
+
+        EditorCore.log(`Creating room: ${roomName}`, 'shareable');
+
+        // Check if room already exists
+        const exists = await this.checkRoomExists(docKey);
+        if (exists) {
+            const join = confirm(`Room "${roomName}" already exists. Join instead?`);
+            if (join) {
+                await this.joinRoom(roomName);
+            }
+            return;
+        }
+
+        // Create the room
+        const success = await EditorCore.initializeDocument(docKey);
+        if (success) {
+            EditorCore.log(`Room created: ${roomName}`, 'shareable');
+            await this.joinRoom(roomName);
+        } else {
+            alert('Failed to create room. Please try again.');
+        }
+    },
+
+    /**
+     * Check if a room exists in Redis
+     * @param {string} docKey - The document key
+     * @returns {Promise<boolean>} True if exists
+     */
+    async checkRoomExists(docKey) {
+        try {
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/EXISTS/${docKey}`);
+            const data = await response.json();
+            return data.EXISTS === 1 || data.EXISTS === true;
+        } catch (error) {
+            EditorCore.log(`Error checking room existence: ${error.message}`, 'error');
+            return false;
+        }
+    },
+
+    /**
+     * Join an existing room
+     * @param {string} roomName - The room name
+     */
+    async joinRoom(roomName) {
+        const docKey = `am:room:${roomName}`;
+
+        EditorCore.log(`Joining room: ${roomName}`, 'shareable');
+
+        // Initialize local Automerge document
+        const baseDoc = Automerge.init();
+        this.doc = Automerge.change(baseDoc, doc => {
+            doc.text = '';
+        });
+        this.prevText = '';
+
+        // Set up WebSocket for changes
+        this.socket = EditorCore.setupWebSocket(
+            this.peerId,
+            docKey,
+            (channel, messageData) => this.handleIncomingMessage(messageData),
+            (command) => this.handleKeyspaceNotification(docKey, command)
+        );
+
+        this.currentRoom = roomName;
+
+        // Update UI
+        document.getElementById('room-selector').classList.add('hidden');
+        document.getElementById('editor-container-shareable').classList.remove('hidden');
+        document.getElementById('current-room-name').textContent = roomName;
+        document.getElementById('sync-status-shareable').textContent = 'Syncing ✓';
+
+        // Set up editor event listener
+        const editor = document.getElementById('editor-shareable');
+        editor.addEventListener('input', EditorCore.debounce(() => this.handleEdit(), 300));
+
+        // Fetch current text from server
+        await this.fetchServerText(docKey);
+
+        EditorCore.log(`Connected to room: ${roomName}`, 'shareable');
+
+        // Update URL without reloading
+        const url = new URL(window.location);
+        url.searchParams.set('room', roomName);
+        window.history.pushState({}, '', url);
+    },
+
+    /**
+     * Fetch current text from server and update local doc
+     * @param {string} docKey - The document key
+     */
+    async fetchServerText(docKey) {
+        try {
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.GETTEXT/${docKey}/text`);
+            const data = await response.json();
+
+            if (data && data['AM.GETTEXT']) {
+                const serverText = data['AM.GETTEXT'];
+                this.doc = Automerge.change(this.doc, doc => {
+                    doc.text = serverText;
+                });
+                this.updateEditor();
+                this.updateDocInfo();
+            }
+        } catch (error) {
+            EditorCore.log(`Error fetching server text: ${error.message}`, 'error');
+        }
+    },
+
+    /**
+     * Handle incoming change messages from Redis pub/sub
+     * @param {string} messageData - Base64-encoded change bytes
+     */
+    handleIncomingMessage(messageData) {
+        try {
+            const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
+            EditorCore.log('Received change from server', 'shareable');
+
+            const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
+            this.doc = newDoc;
+
+            this.updateEditor();
+            this.updateDocInfo();
+        } catch (error) {
+            EditorCore.log(`Error handling message: ${error.message}`, 'error');
+        }
+    },
+
+    /**
+     * Handle keyspace notification events
+     * @param {string} docKey - The document key
+     * @param {string} command - The Redis command that triggered the notification
+     */
+    async handleKeyspaceNotification(docKey, command) {
+        EditorCore.log(`Keyspace notification: ${command} on ${docKey}`, 'shareable');
+        await this.fetchServerText(docKey);
+    },
+
+    /**
+     * Handle local editor changes
+     */
+    async handleEdit() {
+        if (!this.currentRoom) return;
+
+        const docKey = `am:room:${this.currentRoom}`;
+        const textarea = document.getElementById('editor-shareable');
+        const newText = textarea.value;
+
+        // Calculate the minimal splice operation
+        const splice = EditorCore.calculateSplice(this.prevText, newText);
+
+        if (!splice) {
+            return;
+        }
+
+        // Update local document
+        this.doc = Automerge.change(this.doc, d => {
+            d.text = newText;
+        });
+        this.prevText = newText;
+
+        EditorCore.log(`Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, 'shareable');
+
+        // Apply to server
+        await EditorCore.applySpliceToServer(docKey, splice);
+        this.updateDocInfo();
+    },
+
+    /**
+     * Update the editor textarea
+     */
+    updateEditor() {
+        const textarea = document.getElementById('editor-shareable');
+        const oldText = textarea.value;
+        const newText = this.doc.text || '';
+        const cursorPos = textarea.selectionStart;
+
+        if (newText !== oldText) {
+            const splice = EditorCore.calculateSplice(oldText, newText);
+            textarea.value = newText;
+
+            if (splice) {
+                let newCursorPos = cursorPos;
+                if (cursorPos >= splice.pos) {
+                    const netChange = splice.text.length - splice.del;
+                    if (cursorPos <= splice.pos + splice.del) {
+                        newCursorPos = splice.pos + splice.text.length;
+                    } else {
+                        newCursorPos = cursorPos + netChange;
+                    }
+                }
+                newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
+                textarea.setSelectionRange(newCursorPos, newCursorPos);
+            }
+
+            this.prevText = newText;
+        }
+    },
+
+    /**
+     * Update document info panel
+     */
+    updateDocInfo() {
+        if (!this.doc) return;
+
+        const infoDiv = document.getElementById('info-shareable');
+        const history = Automerge.getHistory(this.doc);
+
+        infoDiv.innerHTML = `
+            <div>Characters: ${(this.doc.text || '').length}</div>
+            <div>Changes: ${history.length}</div>
+            <div>Peer: ${this.peerId.slice(0, 8)}</div>
+        `;
+
+        document.getElementById('doc-version-shareable').textContent = `v${history.length}`;
+    },
+
+    /**
+     * Disconnect from current room
+     */
+    disconnect() {
+        if (this.socket) {
+            this.socket.close();
+            this.socket = null;
+        }
+
+        this.doc = null;
+        this.currentRoom = null;
+        this.prevText = '';
+
+        // Update UI
+        document.getElementById('room-selector').classList.remove('hidden');
+        document.getElementById('editor-container-shareable').classList.add('hidden');
+        document.getElementById('editor-shareable').value = '';
+        document.getElementById('sync-status-shareable').textContent = 'Not connected';
+
+        // Remove room from URL
+        const url = new URL(window.location);
+        url.searchParams.delete('room');
+        window.history.pushState({}, '', url);
+
+        EditorCore.log('Disconnected from room', 'shareable');
+    },
+
+    /**
+     * Copy shareable link to clipboard
+     */
+    async copyShareableLink() {
+        if (!this.currentRoom) return;
+
+        const url = new URL(window.location);
+        url.searchParams.set('room', this.currentRoom);
+        const link = url.toString();
+
+        try {
+            await navigator.clipboard.writeText(link);
+            alert(`Link copied: ${link}`);
+            EditorCore.log('Shareable link copied to clipboard', 'shareable');
+        } catch (error) {
+            prompt('Copy this link:', link);
+        }
+    },
+
+    /**
+     * Refresh the room list
+     */
+    async refreshRoomList() {
+        EditorCore.log('Refreshing room list', 'shareable');
+
+        try {
+            // Use KEYS to find all rooms (for demo; use SCAN in production)
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/am:room:*`);
+            const data = await response.json();
+
+            const rooms = (data.KEYS || []).map(key => {
+                // Extract room name from key
+                return key.replace('am:room:', '');
+            });
+
+            // Get active user counts
+            const roomsWithUsers = await Promise.all(
+                rooms.map(async (roomName) => {
+                    const channel = `changes:am:room:${roomName}`;
+                    const numsubResponse = await fetch(`${EditorCore.WEBDIS_URL}/PUBSUB/NUMSUB/${channel}`);
+                    const numsubData = await numsubResponse.json();
+
+                    let activeUsers = 0;
+                    if (numsubData['PUBSUB NUMSUB'] && Array.isArray(numsubData['PUBSUB NUMSUB'])) {
+                        activeUsers = numsubData['PUBSUB NUMSUB'][1] || 0;
+                    }
+
+                    return { roomName, activeUsers };
+                })
+            );
+
+            this.roomList = roomsWithUsers;
+            this.updateRoomListUI();
+
+        } catch (error) {
+            EditorCore.log(`Error refreshing room list: ${error.message}`, 'error');
+        }
+    },
+
+    /**
+     * Update the room list UI
+     */
+    updateRoomListUI() {
+        const listDiv = document.getElementById('room-list');
+
+        if (this.roomList.length === 0) {
+            listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No rooms available. Create one to get started!</div>';
+            return;
+        }
+
+        listDiv.innerHTML = this.roomList.map(({ roomName, activeUsers }) => {
+            const userClass = activeUsers > 0 ? 'active' : '';
+            const userText = activeUsers === 1 ? '1 user' : `${activeUsers} users`;
+            return `
+                <div class="room-item" onclick="ShareableMode.joinRoom('${roomName}')">
+                    <span class="room-name">${roomName}</span>
+                    <span class="room-users ${userClass}">${userText}</span>
+                </div>
+            `;
+        }).join('');
+    },
+
+    /**
+     * Subscribe to room creation/deletion events
+     */
+    subscribeToRoomEvents() {
+        const pattern = '__keyspace@0__:am:room:*';
+
+        this.roomListSocket = new WebSocket(`${EditorCore.WEBDIS_WS_URL}/.json`);
+
+        this.roomListSocket.onopen = () => {
+            EditorCore.log('Room list WebSocket connected', 'shareable');
+            this.roomListSocket.send(JSON.stringify(['PSUBSCRIBE', pattern]));
+        };
+
+        this.roomListSocket.onmessage = async (event) => {
+            try {
+                const response = JSON.parse(event.data);
+
+                if (response.PSUBSCRIBE || response.PMESSAGE) {
+                    const data = response.PSUBSCRIBE || response.PMESSAGE;
+
+                    if (data[0] === 'psubscribe') {
+                        EditorCore.log(`Subscribed to pattern: ${data[1]}`, 'shareable');
+                    } else if (data[0] === 'pmessage') {
+                        const command = data[3];
+                        EditorCore.log(`Room event detected: ${command}`, 'shareable');
+                        // Refresh room list when rooms are created or deleted
+                        if (command === 'am.new' || command === 'del') {
+                            await this.refreshRoomList();
+                        }
+                    }
+                }
+            } catch (error) {
+                EditorCore.log(`Room list WebSocket error: ${error.message}`, 'error');
+            }
+        };
+
+        this.roomListSocket.onerror = (error) => {
+            EditorCore.log('Room list WebSocket error', 'error');
+        };
+
+        this.roomListSocket.onclose = () => {
+            EditorCore.log('Room list WebSocket closed', 'shareable');
+        };
+    }
+};
+
+// Make ShareableMode globally available
+window.ShareableMode = ShareableMode;
+
 // Use EditorCore constants
 const WEBDIS_URL = EditorCore.WEBDIS_URL;
 const WEBDIS_WS_URL = EditorCore.WEBDIS_WS_URL;
@@ -248,7 +718,7 @@ function generatePeerId() {
 }
 
 // Initialize
-window.addEventListener('load', () => {
+window.addEventListener('load', async () => {
     log('Collaborative editor loaded', 'server');
 
     // Check if Automerge loaded
@@ -258,9 +728,14 @@ window.addEventListener('load', () => {
         log('Automerge library ready', 'server');
     }
 
-    checkConnection();
+    // Check connection
+    const connected = await EditorCore.checkConnection();
+    updateConnectionStatus(connected);
 
-    // Set peer IDs
+    // Initialize ShareableMode
+    await ShareableMode.initialize();
+
+    // Set peer IDs for dual mode
     document.getElementById('peer-id-left').textContent = `Peer ID: ${leftPeerId.slice(0, 8)}`;
     document.getElementById('peer-id-right').textContent = `Peer ID: ${rightPeerId.slice(0, 8)}`;
 
@@ -389,13 +864,22 @@ async function checkConnection() {
  */
 function updateConnectionStatus(connected) {
     const status = document.getElementById('connection-status');
+    const statusShareable = document.getElementById('connection-status-shareable');
     isConnected = connected;
     if (connected) {
         status.textContent = 'Connected';
         status.className = 'status-connected';
+        if (statusShareable) {
+            statusShareable.textContent = 'Connected';
+            statusShareable.className = 'status-connected';
+        }
     } else {
         status.textContent = 'Disconnected';
         status.className = 'status-disconnected';
+        if (statusShareable) {
+            statusShareable.textContent = 'Disconnected';
+            statusShareable.className = 'status-disconnected';
+        }
         if (isSyncing) {
             stopSync();
         }
