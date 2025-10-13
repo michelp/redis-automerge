@@ -1,13 +1,232 @@
-// Webdis configuration
-const WEBDIS_URL = 'http://localhost:7379';
-const WEBDIS_WS_URL = 'ws://localhost:7379';
+// ============================================================================
+// EditorCore - Shared primitives used by both modes
+// ============================================================================
+const EditorCore = {
+    WEBDIS_URL: 'http://localhost:7379',
+    WEBDIS_WS_URL: 'ws://localhost:7379',
+
+    /**
+     * Generate a unique peer ID for this editor instance.
+     * @returns {string} A unique peer ID string
+     */
+    generatePeerId() {
+        return 'peer-' + Math.random().toString(36).substring(2, 15);
+    },
+
+    /**
+     * Debounce function to limit how often a function can be called.
+     * @param {Function} func - The function to debounce
+     * @param {number} wait - Milliseconds to wait before calling func
+     * @returns {Function} Debounced version of func
+     */
+    debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    },
+
+    /**
+     * Calculate the difference between two strings and return splice operation parameters.
+     * @param {string} oldText - The previous text
+     * @param {string} newText - The new text
+     * @returns {Object|null} Object with {pos, del, text} or null if no change
+     */
+    calculateSplice(oldText, newText) {
+        // Find common prefix
+        let prefixLen = 0;
+        const minLen = Math.min(oldText.length, newText.length);
+        while (prefixLen < minLen && oldText[prefixLen] === newText[prefixLen]) {
+            prefixLen++;
+        }
+
+        // Find common suffix
+        let suffixLen = 0;
+        const oldEnd = oldText.length;
+        const newEnd = newText.length;
+        while (suffixLen < minLen - prefixLen &&
+               oldText[oldEnd - suffixLen - 1] === newText[newEnd - suffixLen - 1]) {
+            suffixLen++;
+        }
+
+        // Calculate splice parameters
+        const pos = prefixLen;
+        const del = oldEnd - prefixLen - suffixLen;
+        const text = newText.substring(prefixLen, newEnd - suffixLen);
+
+        // No change if nothing was deleted and nothing was inserted
+        if (del === 0 && text.length === 0) {
+            return null;
+        }
+
+        return { pos, del, text };
+    },
+
+    /**
+     * Append a log message to the sync log display.
+     * @param {string} message - The message to log
+     * @param {string} source - Source of the message (server, left, right, error, shareable)
+     */
+    log(message, source = 'server') {
+        const logDiv = document.getElementById('sync-log');
+        if (!logDiv) return;
+        const timestamp = new Date().toLocaleTimeString();
+        const className = `log-${source}`;
+        logDiv.innerHTML += `<span class="${className}">[${timestamp}] [${source.toUpperCase()}] ${message}</span>\n`;
+        logDiv.scrollTop = logDiv.scrollHeight;
+    },
+
+    /**
+     * Check if Webdis/Redis is reachable by sending a PING command.
+     * @returns {Promise<boolean>} True if connected
+     */
+    async checkConnection() {
+        try {
+            const response = await fetch(`${this.WEBDIS_URL}/PING`);
+            const data = await response.json();
+            return data.PING === 'PONG' || data.PING === true || (Array.isArray(data.PING) && data.PING[1] === 'PONG');
+        } catch (error) {
+            return false;
+        }
+    },
+
+    /**
+     * Initialize a new Automerge document in Redis.
+     * @param {string} docKey - The document key
+     * @returns {Promise<boolean>} True if successful
+     */
+    async initializeDocument(docKey) {
+        try {
+            this.log(`Initializing document: ${docKey}`, 'server');
+
+            // Create the document in Redis using AM.NEW
+            const newResponse = await fetch(`${this.WEBDIS_URL}/AM.NEW/${docKey}`);
+            const newData = await newResponse.json();
+            this.log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
+
+            // Initialize the text field with empty string
+            const initResponse = await fetch(`${this.WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/`);
+            const initData = await initResponse.json();
+            this.log(`Text field initialized: ${JSON.stringify(initData)}`, 'server');
+
+            return true;
+        } catch (error) {
+            this.log(`Error initializing document: ${error.message}`, 'error');
+            return false;
+        }
+    },
+
+    /**
+     * Apply a splice operation to the server document.
+     * @param {string} docKey - The document key
+     * @param {Object} splice - The splice operation {pos, del, text}
+     * @returns {Promise<boolean>} True if successful
+     */
+    async applySpliceToServer(docKey, splice) {
+        try {
+            const response = await fetch(`${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: splice.text
+            });
+            const data = await response.json();
+
+            if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
+                return true;
+            } else {
+                this.log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
+                return false;
+            }
+        } catch (error) {
+            this.log(`Error applying splice to server: ${error.message}`, 'error');
+            console.error('Server splice error:', error);
+            return false;
+        }
+    },
+
+    /**
+     * Set up WebSocket connection for real-time pub/sub synchronization.
+     * @param {string} peerId - This peer's ID
+     * @param {string} docKey - The document key to subscribe to
+     * @param {Function} onMessage - Callback(channelName, messageData)
+     * @param {Function} onKeyspace - Callback(command)
+     * @returns {WebSocket} The WebSocket instance
+     */
+    setupWebSocket(peerId, docKey, onMessage, onKeyspace) {
+        const channel = `changes:${docKey}`;
+        const keyspaceChannel = `__keyspace@0__:${docKey}`;
+
+        const ws = new WebSocket(`${this.WEBDIS_WS_URL}/.json`);
+
+        ws.onopen = () => {
+            this.log(`[${peerId}] WebSocket connected`, 'server');
+
+            // Subscribe to the changes channel
+            ws.send(JSON.stringify(['SUBSCRIBE', channel]));
+            this.log(`[${peerId}] Subscribed to ${channel}`, 'server');
+
+            // Subscribe to keyspace notifications
+            ws.send(JSON.stringify(['SUBSCRIBE', keyspaceChannel]));
+            this.log(`[${peerId}] Subscribed to ${keyspaceChannel}`, 'server');
+        };
+
+        ws.onmessage = (event) => {
+            try {
+                const response = JSON.parse(event.data);
+
+                if (response.SUBSCRIBE || response.MESSAGE) {
+                    const data = response.SUBSCRIBE || response.MESSAGE;
+                    if (data[0] === 'subscribe') {
+                        this.log(`[${peerId}] Subscription confirmed for ${data[1]}`, 'server');
+                    } else if (data[0] === 'message') {
+                        const channelName = data[1];
+                        const messageData = data[2];
+
+                        if (channelName.startsWith('__keyspace@')) {
+                            // Keyspace notification
+                            if (onKeyspace) onKeyspace(messageData);
+                        } else {
+                            // Regular message
+                            if (onMessage) onMessage(channelName, messageData);
+                        }
+                    }
+                }
+            } catch (error) {
+                this.log(`[${peerId}] WebSocket message error: ${error.message}`, 'error');
+                console.error('WebSocket message error:', error, event.data);
+            }
+        };
+
+        ws.onerror = (error) => {
+            this.log(`[${peerId}] WebSocket error`, 'error');
+            console.error(`[${peerId}] WebSocket error:`, error);
+        };
+
+        ws.onclose = (event) => {
+            this.log(`[${peerId}] WebSocket disconnected (code: ${event.code})`, 'server');
+        };
+
+        return ws;
+    }
+};
+
+// Use EditorCore constants
+const WEBDIS_URL = EditorCore.WEBDIS_URL;
+const WEBDIS_WS_URL = EditorCore.WEBDIS_WS_URL;
 const SYNC_CHANNEL = 'automerge:sync';
 
 // Editor state
 let leftDoc = null;
 let rightDoc = null;
-let leftPeerId = generatePeerId();
-let rightPeerId = generatePeerId();
+let leftPeerId = EditorCore.generatePeerId();
+let rightPeerId = EditorCore.generatePeerId();
 let isConnected = false;
 let isSyncing = false;
 
@@ -49,8 +268,8 @@ window.addEventListener('load', () => {
     const leftEditor = document.getElementById('editor-left');
     const rightEditor = document.getElementById('editor-right');
 
-    leftEditor.addEventListener('input', debounce(() => handleEdit('left'), 300));
-    rightEditor.addEventListener('input', debounce(() => handleEdit('right'), 300));
+    leftEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('left'), 300));
+    rightEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('right'), 300));
 
     // Check connection periodically
     setInterval(checkConnection, 5000);
@@ -510,7 +729,7 @@ async function handleEdit(editor) {
     const oldText = editor === 'left' ? leftPrevText : rightPrevText;
 
     // Calculate the minimal splice operation
-    const splice = calculateSplice(oldText, newText);
+    const splice = EditorCore.calculateSplice(oldText, newText);
 
     if (!splice) {
         // No change detected
@@ -634,7 +853,7 @@ function updateEditor(editor) {
     // Only update if text differs
     if (newText !== oldText) {
         // Calculate the splice to determine cursor adjustment
-        const splice = calculateSplice(oldText, newText);
+        const splice = EditorCore.calculateSplice(oldText, newText);
 
         textarea.value = newText;
 
