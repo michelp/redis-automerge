@@ -233,7 +233,7 @@ async function connectEditors() {
  * @param {string} docKey - The document key to subscribe to
  */
 function setupWebSocket(editor, docKey) {
-    const channel = `${SYNC_CHANNEL}:${docKey}`;
+    const channel = `changes:${docKey}`;
     const keyspaceChannel = `__keyspace@0__:${docKey}`;
     const peerId = editor === 'left' ? leftPeerId : rightPeerId;
 
@@ -243,7 +243,7 @@ function setupWebSocket(editor, docKey) {
     ws.onopen = () => {
         log(`[${editor}] WebSocket connected`, editor);
 
-        // Subscribe to the sync channel (for peer changes)
+        // Subscribe to the changes channel (for server-published changes)
         const subscribeCmd = JSON.stringify(['SUBSCRIBE', channel]);
         ws.send(subscribeCmd);
         log(`[${editor}] Subscribed to ${channel}`, editor);
@@ -291,7 +291,7 @@ function setupWebSocket(editor, docKey) {
                         log(`[${editor}] Keyspace event: ${messageData}`, editor);
                         handleKeyspaceNotification(editor, docKey, messageData);
                     } else {
-                        // Regular pub/sub message from another editor
+                        // Server-published change message
                         log(`[${editor}] Received pub/sub message`, editor);
                         handleIncomingMessage(editor, messageData, peerId);
                     }
@@ -382,48 +382,30 @@ async function handleKeyspaceNotification(editor, docKey, command) {
 
 /**
  * Handle incoming change messages from Redis pub/sub via WebSocket.
- * Decodes the base64-encoded changes and applies them to the local document.
- * Filters out messages from self to avoid duplicate updates.
+ * Decodes the base64-encoded change bytes from the server and applies them to the local document.
  * @param {string} editor - Which editor ('left' or 'right')
- * @param {string} messageData - Base64-encoded JSON message with changes
- * @param {string} myPeerId - This peer's ID to filter out self-messages
+ * @param {string} messageData - Base64-encoded change bytes from server
+ * @param {string} myPeerId - This peer's ID (not used anymore, kept for compatibility)
  */
 function handleIncomingMessage(editor, messageData, myPeerId) {
     try {
         console.log(`[${editor}] handleIncomingMessage called with:`, messageData);
 
-        // Decode the message (it's base64 encoded)
-        const decoded = atob(messageData);
-        console.log(`[${editor}] Decoded message:`, decoded);
+        // Decode the change bytes from base64 (server publishes raw change bytes)
+        const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
+        console.log(`[${editor}] Decoded change bytes, length:`, changeBytes.length);
 
-        const message = JSON.parse(decoded);
-        console.log(`[${editor}] Parsed message:`, message);
-
-        // Ignore messages from ourselves
-        if (message.peerId === myPeerId) {
-            log(`[${editor}] Ignoring message from self`, editor);
-            return;
-        }
-
-        log(`[${editor}] Received ${message.changes.length} change(s) from peer ${message.peerId.slice(0, 8)}`, editor);
-
-        // Decode all changes from base64
-        const changesByteArray = message.changes.map(changeBase64 => {
-            return Uint8Array.from(atob(changeBase64), c => c.charCodeAt(0));
-        });
-
-        console.log(`[${editor}] Decoded ${changesByteArray.length} changes`);
+        log(`[${editor}] Received change from server`, editor);
 
         // Get current document
         const currentDoc = editor === 'left' ? leftDoc : rightDoc;
         console.log(`[${editor}] Current doc:`, currentDoc);
 
-        // Apply all changes to the current document
-        console.log(`[${editor}] About to apply changes. CurrentDoc actor:`, Automerge.getActorId(currentDoc));
-        console.log(`[${editor}] Change bytes:`, changesByteArray);
-        const [newDoc] = Automerge.applyChanges(currentDoc, changesByteArray);
+        // Apply the change to the current document
+        console.log(`[${editor}] About to apply change. CurrentDoc actor:`, Automerge.getActorId(currentDoc));
+        const [newDoc] = Automerge.applyChanges(currentDoc, [changeBytes]);
         console.log(`[${editor}] ApplyChanges returned successfully`);
-        console.log(`[${editor}] New doc after applying changes:`, newDoc);
+        console.log(`[${editor}] New doc after applying change:`, newDoc);
 
         // Update the document reference
         if (editor === 'left') {
@@ -436,7 +418,7 @@ function handleIncomingMessage(editor, messageData, myPeerId) {
         updateEditor(editor);
         updateDocInfo(editor);
 
-        log(`[${editor}] Applied change(s) from peer`, editor);
+        log(`[${editor}] Applied change from server`, editor);
 
     } catch (error) {
         log(`[${editor}] Error handling message: ${error.message}`, 'error');
@@ -463,8 +445,9 @@ function stopSync() {
 }
 
 /**
- * Handle local editor changes and sync to other peers.
- * Captures Automerge changes, applies to server via AM.APPLY, and publishes via pub/sub.
+ * Handle local editor changes and sync to server.
+ * Captures Automerge changes and applies to server via AM.PUTTEXT.
+ * Server automatically publishes changes to the changes:{key} channel.
  * Debounced to avoid excessive updates during rapid typing.
  * @param {string} editor - Which editor ('left' or 'right')
  */
@@ -504,49 +487,10 @@ async function handleEdit(editor) {
     log(`[${editor}] Local edit detected, applying ${changes.length} change(s) to server`, editor);
 
     // Apply changes to server document via AM.PUTTEXT
+    // Server will automatically publish changes to the changes:{key} channel
     await applyChangesToServer(docKey, newDoc);
 
-    // Publish the incremental changes to other clients via pub/sub
-    await publishChange(editor, docKey, changes);
-
     updateDocInfo(editor);
-}
-
-/**
- * Publish Automerge changes to Redis pub/sub channel.
- * Encodes changes as base64 and sends via HTTP PUBLISH command to Webdis.
- * All subscribed editors will receive this message via their WebSocket connections.
- * @param {string} editor - Which editor ('left' or 'right')
- * @param {string} docKey - The document key
- * @param {Array} changes - Array of Automerge change objects
- */
-async function publishChange(editor, docKey, changes) {
-    const peerId = editor === 'left' ? leftPeerId : rightPeerId;
-    const channel = `${SYNC_CHANNEL}:${docKey}`;
-
-    try {
-        // Encode each change to base64
-        const changesBase64 = changes.map(change => {
-            const changeBytes = new Uint8Array(change);
-            return btoa(String.fromCharCode.apply(null, changeBytes));
-        });
-
-        // Create message with peer ID and the changes
-        const message = JSON.stringify({
-            peerId: peerId,
-            changes: changesBase64
-        });
-
-        // Encode message to base64
-        const encoded = btoa(message);
-
-        // Publish to Redis channel via Webdis
-        await fetch(`${WEBDIS_URL}/PUBLISH/${channel}/${encoded}`);
-
-        log(`[${editor}] Published ${changes.length} change(s)`, editor);
-    } catch (error) {
-        log(`[${editor}] Error publishing: ${error.message}`, 'error');
-    }
 }
 
 /**
