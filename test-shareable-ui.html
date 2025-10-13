@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ShareableMode UI Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .test-section {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        h2 {
+            color: #667eea;
+            margin-top: 0;
+        }
+        .test-result {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+        .pass {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .fail {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .pending {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        button {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+        #log {
+            background: #1f2937;
+            color: #10b981;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+        }
+    </style>
+</head>
+<body>
+    <h1>ShareableMode UI Test Suite</h1>
+
+    <div class="test-section">
+        <h2>Test 1: API Availability</h2>
+        <div id="test1-result" class="test-result pending">Pending...</div>
+        <button onclick="runTest1()">Run Test</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 2: Room Creation</h2>
+        <div id="test2-result" class="test-result pending">Pending...</div>
+        <button onclick="runTest2()">Run Test</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 3: Room List Discovery</h2>
+        <div id="test3-result" class="test-result pending">Pending...</div>
+        <button onclick="runTest3()">Run Test</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 4: Active User Tracking</h2>
+        <div id="test4-result" class="test-result pending">Pending...</div>
+        <button onclick="runTest4()">Run Test</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test 5: Text Operations</h2>
+        <div id="test5-result" class="test-result pending">Pending...</div>
+        <button onclick="runTest5()">Run Test</button>
+    </div>
+
+    <div class="test-section">
+        <h2>Test Log</h2>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        const WEBDIS_URL = 'http://localhost:7379';
+
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString();
+            logDiv.textContent += `[${timestamp}] ${message}\n`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function setResult(testId, success, message) {
+            const div = document.getElementById(`${testId}-result`);
+            div.className = `test-result ${success ? 'pass' : 'fail'}`;
+            div.textContent = message;
+        }
+
+        async function runTest1() {
+            log('Test 1: Checking API availability...');
+            try {
+                const response = await fetch(`${WEBDIS_URL}/PING`);
+                const data = await response.json();
+                if (data.PING === 'PONG' || data.PING === true || (Array.isArray(data.PING) && data.PING[1] === 'PONG')) {
+                    setResult('test1', true, '✓ PASS: Webdis API is available');
+                    log('Webdis API is available');
+                } else {
+                    setResult('test1', false, '✗ FAIL: Unexpected PING response');
+                    log('Unexpected PING response: ' + JSON.stringify(data));
+                }
+            } catch (error) {
+                setResult('test1', false, `✗ FAIL: ${error.message}`);
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function runTest2() {
+            log('Test 2: Testing room creation...');
+            const roomName = 'test-room-' + Date.now();
+            try {
+                // Create room
+                const createResponse = await fetch(`${WEBDIS_URL}/AM.NEW/am:room:${roomName}`);
+                const createData = await createResponse.json();
+                log('Create response: ' + JSON.stringify(createData));
+
+                // Initialize text
+                const initResponse = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/am:room:${roomName}/text/`);
+                const initData = await initResponse.json();
+                log('Init response: ' + JSON.stringify(initData));
+
+                // Check existence
+                const existsResponse = await fetch(`${WEBDIS_URL}/EXISTS/am:room:${roomName}`);
+                const existsData = await existsResponse.json();
+                log('Exists response: ' + JSON.stringify(existsData));
+
+                if (existsData.EXISTS === 1 || existsData.EXISTS === true) {
+                    setResult('test2', true, `✓ PASS: Room created successfully (${roomName})`);
+                    log('Room created successfully');
+                } else {
+                    setResult('test2', false, '✗ FAIL: Room not found after creation');
+                    log('Room not found after creation');
+                }
+            } catch (error) {
+                setResult('test2', false, `✗ FAIL: ${error.message}`);
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function runTest3() {
+            log('Test 3: Testing room list discovery...');
+            try {
+                const response = await fetch(`${WEBDIS_URL}/KEYS/am:room:*`);
+                const data = await response.json();
+                log('Room list response: ' + JSON.stringify(data));
+
+                const rooms = data.KEYS || [];
+                if (Array.isArray(rooms)) {
+                    setResult('test3', true, `✓ PASS: Found ${rooms.length} rooms`);
+                    log(`Found ${rooms.length} rooms: ${rooms.join(', ')}`);
+                } else {
+                    setResult('test3', false, '✗ FAIL: Invalid room list response');
+                    log('Invalid room list response');
+                }
+            } catch (error) {
+                setResult('test3', false, `✗ FAIL: ${error.message}`);
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function runTest4() {
+            log('Test 4: Testing active user tracking...');
+            try {
+                const channel = 'changes:am:room:test-room';
+                const response = await fetch(`${WEBDIS_URL}/PUBSUB/NUMSUB/${channel}`);
+                const data = await response.json();
+                log('PUBSUB response: ' + JSON.stringify(data));
+
+                const pubsubResult = data['PUBSUB NUMSUB'] || data.PUBSUB;
+                if (Array.isArray(pubsubResult)) {
+                    const activeUsers = pubsubResult[1] || 0;
+                    setResult('test4', true, `✓ PASS: Active user tracking works (${activeUsers} users)`);
+                    log(`Active users: ${activeUsers}`);
+                } else {
+                    setResult('test4', false, '✗ FAIL: Invalid PUBSUB response');
+                    log('Invalid PUBSUB response');
+                }
+            } catch (error) {
+                setResult('test4', false, `✗ FAIL: ${error.message}`);
+                log('Error: ' + error.message);
+            }
+        }
+
+        async function runTest5() {
+            log('Test 5: Testing text operations...');
+            const roomName = 'test-text-' + Date.now();
+            try {
+                // Create room
+                await fetch(`${WEBDIS_URL}/AM.NEW/am:room:${roomName}`);
+                await fetch(`${WEBDIS_URL}/AM.PUTTEXT/am:room:${roomName}/text/Hello`);
+                log('Created room and set text to "Hello"');
+
+                // Get text
+                const getResponse = await fetch(`${WEBDIS_URL}/AM.GETTEXT/am:room:${roomName}/text`);
+                const getData = await getResponse.json();
+                const text = getData['AM.GETTEXT'];
+                log('Got text: ' + text);
+
+                if (text === 'Hello') {
+                    setResult('test5', true, '✓ PASS: Text operations work');
+                    log('Text operations successful');
+                } else {
+                    setResult('test5', false, `✗ FAIL: Expected "Hello", got "${text}"`);
+                    log(`Expected "Hello", got "${text}"`);
+                }
+            } catch (error) {
+                setResult('test5', false, `✗ FAIL: ${error.message}`);
+                log('Error: ' + error.message);
+            }
+        }
+
+        // Run all tests on load
+        window.addEventListener('load', async () => {
+            log('Starting test suite...');
+            await runTest1();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await runTest2();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await runTest3();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await runTest4();
+            await new Promise(resolve => setTimeout(resolve, 500));
+            await runTest5();
+            log('Test suite complete!');
+        });
+    </script>
+</body>
+</html>
