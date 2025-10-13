@@ -19,6 +19,7 @@
 //! - `AM.PUTTEXT <key> <path> <value>` - Set a text value
 //! - `AM.GETTEXT <key> <path>` - Get a text value
 //! - `AM.PUTDIFF <key> <path> <diff>` - Apply a unified diff to update text efficiently
+//! - `AM.SPLICETEXT <key> <path> <pos> <del> <text>` - Splice text at position (insert/delete/replace)
 //! - `AM.PUTINT <key> <path> <value>` - Set an integer value
 //! - `AM.GETINT <key> <path>` - Get an integer value
 //! - `AM.PUTDOUBLE <key> <path> <value>` - Set a double value
@@ -268,6 +269,44 @@ fn am_putdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putdiff", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdiff", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_splicetext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 6 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let pos: usize = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("pos must be a non-negative integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("pos must be a non-negative integer"))?;
+    let del: isize = args[4]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("del must be an integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("del out of range"))?;
+    let text = parse_utf8_value(&args[5])?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .splice_text_with_change(field, pos, del, text)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.splicetext", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.splicetext", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -663,6 +702,7 @@ redis_module! {
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
         ["am.putdiff", am_putdiff, "write deny-oom", 1, 1, 1],
+        ["am.splicetext", am_splicetext, "write deny-oom", 1, 1, 1],
         ["am.putint", am_putint, "write deny-oom", 1, 1, 1],
         ["am.getint", am_getint, "readonly", 1, 1, 1],
         ["am.putdouble", am_putdouble, "write deny-oom", 1, 1, 1],
@@ -1167,5 +1207,141 @@ mod tests {
         assert_eq!(client2.get_text("name").unwrap(), Some("Alice".to_string()));
         assert_eq!(client2.get_int("age").unwrap(), Some(30));
         assert_eq!(client2.get_bool("active").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn splice_text_simple_replacement() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("greeting", "Hello World").unwrap();
+        assert_eq!(
+            client.get_text("greeting").unwrap(),
+            Some("Hello World".to_string())
+        );
+
+        // Replace "World" with "Rust" - delete 5 chars at position 6, insert "Rust"
+        client.splice_text("greeting", 6, 5, "Rust").unwrap();
+
+        assert_eq!(
+            client.get_text("greeting").unwrap(),
+            Some("Hello Rust".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_insertion() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("text", "HelloWorld").unwrap();
+
+        // Insert a space at position 5 - delete 0, insert " "
+        client.splice_text("text", 5, 0, " ").unwrap();
+
+        assert_eq!(
+            client.get_text("text").unwrap(),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_deletion() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("text", "Hello  World").unwrap();
+
+        // Delete extra space at position 5 - delete 1, insert nothing
+        client.splice_text("text", 5, 1, "").unwrap();
+
+        assert_eq!(
+            client.get_text("text").unwrap(),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_at_beginning() {
+        let mut client = RedisAutomergeClient::new();
+
+        client.put_text("text", "World").unwrap();
+
+        // Insert at beginning
+        client.splice_text("text", 0, 0, "Hello ").unwrap();
+
+        assert_eq!(
+            client.get_text("text").unwrap(),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_at_end() {
+        let mut client = RedisAutomergeClient::new();
+
+        client.put_text("text", "Hello").unwrap();
+
+        // Insert at end
+        client.splice_text("text", 5, 0, " World").unwrap();
+
+        assert_eq!(
+            client.get_text("text").unwrap(),
+            Some("Hello World".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_with_change_returns_bytes() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("field", "Hello World").unwrap();
+
+        // Splice and get change bytes
+        let change_bytes = client
+            .splice_text_with_change("field", 6, 5, "Rust")
+            .unwrap();
+        assert!(change_bytes.is_some(), "Splice should return change bytes");
+
+        // Verify the result on the first client
+        assert_eq!(
+            client.get_text("field").unwrap(),
+            Some("Hello Rust".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_nested_path() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set nested text
+        client.put_text("user.greeting", "Hello World").unwrap();
+
+        // Splice nested path
+        client.splice_text("user.greeting", 6, 5, "Rust").unwrap();
+
+        assert_eq!(
+            client.get_text("user.greeting").unwrap(),
+            Some("Hello Rust".to_string())
+        );
+    }
+
+    #[test]
+    fn splice_text_persistence() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create and splice text
+        client.put_text("doc", "Hello World").unwrap();
+        client.splice_text("doc", 6, 5, "Rust").unwrap();
+
+        // Save and reload
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+
+        assert_eq!(
+            loaded.get_text("doc").unwrap(),
+            Some("Hello Rust".to_string())
+        );
     }
 }

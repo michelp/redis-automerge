@@ -410,6 +410,129 @@ test_notification "notif_test12" "am.putdiff" "redis-cli -h $HOST am.putdiff not
 '"
 echo "   ✓ AM.PUTDIFF emits keyspace notification"
 
+# Test AM.SPLICETEXT command
+echo "47. Testing AM.SPLICETEXT with simple replacement..."
+redis-cli -h "$HOST" del splice_test1
+redis-cli -h "$HOST" am.new splice_test1
+redis-cli -h "$HOST" am.puttext splice_test1 greeting "Hello World"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test1 greeting)
+test "$val" = "Hello World"
+
+# Replace "World" with "Rust" - delete 5 chars at position 6, insert "Rust"
+redis-cli -h "$HOST" am.splicetext splice_test1 greeting 6 5 "Rust"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test1 greeting)
+test "$val" = "Hello Rust"
+echo "   ✓ AM.SPLICETEXT simple replacement works"
+
+echo "48. Testing AM.SPLICETEXT with insertion..."
+redis-cli -h "$HOST" del splice_test2
+redis-cli -h "$HOST" am.new splice_test2
+redis-cli -h "$HOST" am.puttext splice_test2 text "HelloWorld"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test2 text)
+test "$val" = "HelloWorld"
+
+# Insert a space at position 5 - delete 0, insert " "
+redis-cli -h "$HOST" am.splicetext splice_test2 text 5 0 " "
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test2 text)
+test "$val" = "Hello World"
+echo "   ✓ AM.SPLICETEXT insertion works"
+
+echo "49. Testing AM.SPLICETEXT with deletion..."
+redis-cli -h "$HOST" del splice_test3
+redis-cli -h "$HOST" am.new splice_test3
+redis-cli -h "$HOST" am.puttext splice_test3 text "Hello  World"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test3 text)
+test "$val" = "Hello  World"
+
+# Delete extra space at position 5 - delete 1, insert nothing
+redis-cli -h "$HOST" am.splicetext splice_test3 text 5 1 ""
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test3 text)
+test "$val" = "Hello World"
+echo "   ✓ AM.SPLICETEXT deletion works"
+
+echo "50. Testing AM.SPLICETEXT at beginning..."
+redis-cli -h "$HOST" del splice_test4
+redis-cli -h "$HOST" am.new splice_test4
+redis-cli -h "$HOST" am.puttext splice_test4 text "World"
+
+# Insert at beginning
+redis-cli -h "$HOST" am.splicetext splice_test4 text 0 0 "Hello "
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test4 text)
+test "$val" = "Hello World"
+echo "   ✓ AM.SPLICETEXT at beginning works"
+
+echo "51. Testing AM.SPLICETEXT at end..."
+redis-cli -h "$HOST" del splice_test5
+redis-cli -h "$HOST" am.new splice_test5
+redis-cli -h "$HOST" am.puttext splice_test5 text "Hello"
+
+# Insert at end
+redis-cli -h "$HOST" am.splicetext splice_test5 text 5 0 " World"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test5 text)
+test "$val" = "Hello World"
+echo "   ✓ AM.SPLICETEXT at end works"
+
+echo "52. Testing AM.SPLICETEXT with nested path..."
+redis-cli -h "$HOST" del splice_test6
+redis-cli -h "$HOST" am.new splice_test6
+redis-cli -h "$HOST" am.puttext splice_test6 user.greeting "Hello World"
+
+# Splice nested path
+redis-cli -h "$HOST" am.splicetext splice_test6 user.greeting 6 5 "Rust"
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test6 user.greeting)
+test "$val" = "Hello Rust"
+echo "   ✓ AM.SPLICETEXT with nested paths works"
+
+echo "53. Testing AM.SPLICETEXT persistence..."
+redis-cli -h "$HOST" del splice_test7
+redis-cli -h "$HOST" am.new splice_test7
+redis-cli -h "$HOST" am.puttext splice_test7 doc "Hello World"
+redis-cli -h "$HOST" am.splicetext splice_test7 doc 6 5 "Rust"
+
+# Save and reload
+redis-cli -h "$HOST" --raw am.save splice_test7 > /tmp/splice-saved.bin
+truncate -s -1 /tmp/splice-saved.bin
+redis-cli -h "$HOST" del splice_test7
+redis-cli -h "$HOST" --raw -x am.load splice_test7 < /tmp/splice-saved.bin
+
+val=$(redis-cli -h "$HOST" --raw am.gettext splice_test7 doc)
+test "$val" = "Hello Rust"
+echo "   ✓ AM.SPLICETEXT persistence works"
+
+echo "54. Testing AM.SPLICETEXT notification..."
+redis-cli -h "$HOST" del notif_test14
+redis-cli -h "$HOST" am.new notif_test14
+redis-cli -h "$HOST" am.puttext notif_test14 field "Hello World"
+test_notification "notif_test14" "am.splicetext" "redis-cli -h $HOST am.splicetext notif_test14 field 6 5 'Rust'"
+echo "   ✓ AM.SPLICETEXT emits keyspace notification"
+
+echo "55. Testing AM.SPLICETEXT change publishing..."
+redis-cli -h "$HOST" del change_pub_splice > /dev/null
+redis-cli -h "$HOST" am.new change_pub_splice > /dev/null
+redis-cli -h "$HOST" am.puttext change_pub_splice content "Hello World" > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_splice" > /tmp/changes_test55.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.SPLICETEXT operation
+redis-cli -h "$HOST" am.splicetext change_pub_splice content 6 5 "Rust" > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test55.txt ] && grep -q "changes:change_pub_splice" /tmp/changes_test55.txt; then
+    echo "   ✓ AM.SPLICETEXT publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.SPLICETEXT"
+    [ -f /tmp/changes_test55.txt ] && cat /tmp/changes_test55.txt
+fi
+rm -f /tmp/changes_test55.txt
+
 # Test automatic change publishing
 echo "36. Testing automatic change publishing on AM.PUTTEXT..."
 redis-cli -h "$HOST" del change_pub_test1 > /dev/null
