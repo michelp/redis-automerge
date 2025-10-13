@@ -268,13 +268,13 @@ function setupWebSocket(editor, docKey) {
                     const channelName = data[1];
                     const messageData = data[2];
 
-                    // Check if this is a keyspace notification or regular pub/sub message
+                    // Check if this is a keyspace notification or server-published change
                     if (channelName.startsWith('__keyspace@')) {
                         // Keyspace notification - external change to the Redis key
                         log(`[${editor}] Keyspace event: ${messageData}`, editor);
                         handleKeyspaceNotification(editor, docKey, messageData);
                     } else {
-                        // Regular pub/sub message from another editor
+                        // Server-published change message
                         log(`[${editor}] Received pub/sub message`, editor);
                         handleIncomingMessage(editor, messageData, peerId);
                     }
