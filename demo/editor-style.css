@@ -323,3 +323,172 @@ textarea:focus {
         writing-mode: horizontal-tb;
     }
 }
+
+/* Tab selector */
+.tab-container {
+    display: flex;
+    gap: 0;
+    margin-bottom: 20px;
+    border-bottom: 2px solid #ddd;
+    background: white;
+    border-radius: 12px 12px 0 0;
+    overflow: hidden;
+}
+
+.tab-btn {
+    padding: 12px 24px;
+    background: #f5f5f5;
+    border: none;
+    border-bottom: 3px solid transparent;
+    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.3s;
+}
+
+.tab-btn:hover {
+    background: #e8e8e8;
+}
+
+.tab-btn.active {
+    background: white;
+    border-bottom-color: #667eea;
+    font-weight: bold;
+}
+
+/* Mode panels */
+.mode-panel {
+    display: block;
+}
+
+.mode-panel.hidden {
+    display: none;
+}
+
+/* Room selector */
+.room-selector {
+    padding: 20px;
+    background: #f9f9f9;
+    border-radius: 8px;
+    margin-bottom: 20px;
+}
+
+.room-list {
+    margin: 15px 0;
+    max-height: 300px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    background: white;
+}
+
+.room-item {
+    padding: 12px;
+    border-bottom: 1px solid #eee;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.room-item:hover {
+    background: #f0f0f0;
+}
+
+.room-item:last-child {
+    border-bottom: none;
+}
+
+.room-name {
+    font-weight: bold;
+    color: #333;
+}
+
+.room-users {
+    color: #666;
+    font-size: 14px;
+}
+
+.room-users.active {
+    color: #4CAF50;
+    font-weight: bold;
+}
+
+.create-room-controls {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #ddd;
+}
+
+/* Room info bar */
+.room-info {
+    padding: 12px;
+    background: #e3f2fd;
+    border-radius: 4px;
+    margin-bottom: 15px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.editor-section {
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+}
+
+.editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #667eea;
+}
+
+.doc-info {
+    margin-top: 15px;
+    padding: 15px;
+    background: #f9fafb;
+    border-radius: 6px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #666;
+    line-height: 1.6;
+}
+
+.doc-version {
+    margin-top: 10px;
+    padding: 5px 12px;
+    background: #fbbf24;
+    color: #1f2937;
+    border-radius: 15px;
+    font-size: 13px;
+    font-weight: 600;
+    display: inline-block;
+}
+
+.action-button {
+    padding: 8px 16px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.action-button:hover {
+    background: #5568d3;
+}
+
+#connection-status-shareable {
+    font-weight: bold;
+}
+
+.log-shareable {
+    color: #a78bfa;
+}

@@ -3,14 +3,28 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Collaborative Editor - Redis-Automerge</title>
+    <title>Redis-Automerge Collaborative Editor Demo</title>
     <link rel="stylesheet" href="editor-style.css">
+    <script src="https://cdn.jsdelivr.net/npm/@automerge/automerge/dist/index.js"></script>
 </head>
 <body>
-    <div class="header">
-        <h1>🔴 Collaborative Editor Demo</h1>
-        <p>Real-time CRDT synchronization with Automerge</p>
-        <div class="controls">
+    <h1>Redis-Automerge Collaborative Editor</h1>
+
+    <!-- Tab Selector -->
+    <div id="mode-selector" class="tab-container">
+        <button class="tab-btn active" data-mode="dual" onclick="switchMode('dual')">
+            Dual Editor Mode
+        </button>
+        <button class="tab-btn" data-mode="shareable" onclick="switchMode('shareable')">
+            Shareable Link Mode
+        </button>
+    </div>
+
+    <!-- Dual Editor Mode Panel (existing content) -->
+    <div id="dual-mode" class="mode-panel active">
+        <div class="header">
+            <p>Real-time CRDT synchronization with Automerge</p>
+            <div class="controls">
             <input type="text" id="doc-key" placeholder="Document key" value="collab-doc">
             <button id="create-btn" onclick="initializeDocument()">Create New Document</button>
             <button id="connect-btn" onclick="connectEditors()">Connect Editors</button>
@@ -69,19 +83,79 @@
     </div>
 
     <div class="instructions">
-        <h3>How It Works</h3>
-        <ol>
-            <li><strong>Create Document:</strong> Initialize a new Automerge document in Redis</li>
-            <li><strong>Connect Editors:</strong> Both editors sync with Redis and subscribe to changes</li>
-            <li><strong>Type in Either Editor:</strong> Changes are automatically synced via Redis Pub/Sub</li>
-            <li><strong>Local-First:</strong> Each editor maintains its own Automerge document copy</li>
-            <li><strong>Conflict Resolution:</strong> Automerge CRDT handles concurrent edits automatically</li>
-        </ol>
-        <p><strong>Try it:</strong> Type in both editors simultaneously to see conflict-free merging in action!</p>
+            <h3>How It Works</h3>
+            <ol>
+                <li><strong>Create Document:</strong> Initialize a new Automerge document in Redis</li>
+                <li><strong>Connect Editors:</strong> Both editors sync with Redis and subscribe to changes</li>
+                <li><strong>Type in Either Editor:</strong> Changes are automatically synced via Redis Pub/Sub</li>
+                <li><strong>Local-First:</strong> Each editor maintains its own Automerge document copy</li>
+                <li><strong>Conflict Resolution:</strong> Automerge CRDT handles concurrent edits automatically</li>
+            </ol>
+            <p><strong>Try it:</strong> Type in both editors simultaneously to see conflict-free merging in action!</p>
+        </div>
     </div>
 
-    <!-- Use Automerge from CDN - Using the stable 1.x version for browser compatibility -->
-    <script src="https://cdn.jsdelivr.net/npm/automerge@1.0.1-preview.7/dist/automerge.js"></script>
-    <script src="editor-app.js" defer></script>
+    <!-- Shareable Editor Mode Panel (new) -->
+    <div id="shareable-mode" class="mode-panel hidden">
+        <div class="controls">
+            <div class="status-bar">
+                <span>Connection: </span>
+                <span id="connection-status-shareable" class="status-disconnected">Checking...</span>
+                <span style="margin-left: 20px;">Sync: </span>
+                <span id="sync-status-shareable">Not connected</span>
+            </div>
+        </div>
+
+        <div id="room-selector" class="room-selector">
+            <h3>Join or Create Room</h3>
+
+            <div id="room-list-container">
+                <button onclick="ShareableMode.refreshRoomList()" class="action-button">
+                    Refresh Room List
+                </button>
+                <div id="room-list" class="room-list">
+                    <!-- Dynamically populated -->
+                </div>
+            </div>
+
+            <div class="create-room-controls">
+                <h4>Create New Room</h4>
+                <button onclick="ShareableMode.createRandomRoom()" class="action-button">
+                    Create Random Room
+                </button>
+                <div style="margin-top: 10px;">
+                    <input id="custom-room-name" type="text" placeholder="Or enter custom room name"
+                           style="width: 300px; padding: 5px;">
+                    <button onclick="ShareableMode.createCustomRoom()" class="action-button">
+                        Create Custom Room
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="editor-container-shareable" class="editor-container hidden">
+            <div id="room-info" class="room-info">
+                <span>Room: <strong id="current-room-name"></strong></span>
+                <button onclick="ShareableMode.copyShareableLink()" class="action-button">
+                    Copy Link
+                </button>
+                <button onclick="ShareableMode.disconnect()" class="action-button">
+                    Disconnect
+                </button>
+            </div>
+
+            <div class="editor-section">
+                <div class="editor-header">
+                    <h3>Shared Editor</h3>
+                    <span id="peer-id-shareable"></span>
+                </div>
+                <textarea id="editor-shareable" class="editor" placeholder="Start typing..."></textarea>
+                <div id="info-shareable" class="doc-info"></div>
+                <div id="doc-version-shareable" class="doc-version"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="editor-app.js"></script>
 </body>
 </html>

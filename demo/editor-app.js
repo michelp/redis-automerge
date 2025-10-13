@@ -928,3 +928,25 @@ function updateDocInfo(editor) {
     document.getElementById(`doc-version-${editor}`).textContent =
         `${editor === 'left' ? 'Left' : 'Right'}: v${history.length}`;
 }
+
+/**
+ * Switch between dual and shareable modes
+ * @param {string} mode - 'dual' or 'shareable'
+ */
+function switchMode(mode) {
+    // Update tab buttons
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    // Update panels
+    document.getElementById('dual-mode').classList.toggle('active', mode === 'dual');
+    document.getElementById('dual-mode').classList.toggle('hidden', mode !== 'dual');
+    document.getElementById('shareable-mode').classList.toggle('active', mode === 'shareable');
+    document.getElementById('shareable-mode').classList.toggle('hidden', mode !== 'shareable');
+
+    EditorCore.log(`Switched to ${mode} mode`, 'server');
+}
+
+// Make it globally available
+window.switchMode = switchMode;
