@@ -355,9 +355,90 @@ redis-cli -h "$HOST" am.createlist notif_test11 flags
 test_notification "notif_test11" "am.appendbool" "redis-cli -h $HOST am.appendbool notif_test11 flags true"
 echo "   ✓ AM.APPENDBOOL emits keyspace notification"
 
-echo "31. Testing AM.APPLY notification..."
+# Test AM.PUTDIFF command
+echo "32. Testing AM.PUTDIFF with simple replacement..."
+redis-cli -h "$HOST" del diff_test1
+redis-cli -h "$HOST" am.new diff_test1
+redis-cli -h "$HOST" am.puttext diff_test1 content "Hello World"
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
+test "$val" = "Hello World"
+
+# Apply a diff that changes "World" to "Rust"
+diff_data="--- a/content
++++ b/content
+@@ -1 +1 @@
+-Hello World
++Hello Rust
+"
+echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test1 content
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
+test "$val" = "Hello Rust"
+echo "   ✓ AM.PUTDIFF simple replacement works"
+
+echo "33. Testing AM.PUTDIFF with line insertion..."
+redis-cli -h "$HOST" del diff_test2
+redis-cli -h "$HOST" am.new diff_test2
+redis-cli -h "$HOST" am.puttext diff_test2 doc "Line 1
+Line 3
+"
+
+# Apply a diff that inserts "Line 2"
+diff_data="--- a/doc
++++ b/doc
+@@ -1,2 +1,3 @@
+ Line 1
++Line 2
+ Line 3
+"
+echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test2 doc
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_test2 doc)
+expected="Line 1
+Line 2
+Line 3
+"
+test "$val" = "$expected"
+echo "   ✓ AM.PUTDIFF line insertion works"
+
+echo "34. Testing AM.PUTDIFF with line deletion..."
+redis-cli -h "$HOST" del diff_test3
+redis-cli -h "$HOST" am.new diff_test3
+redis-cli -h "$HOST" am.puttext diff_test3 doc "Line 1
+Line 2
+Line 3
+"
+
+# Apply a diff that removes Line 2
+diff_data="--- a/doc
++++ b/doc
+@@ -1,3 +1,2 @@
+ Line 1
+-Line 2
+ Line 3
+"
+echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test3 doc
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_test3 doc)
+expected="Line 1
+Line 3
+"
+test "$val" = "$expected"
+echo "   ✓ AM.PUTDIFF line deletion works"
+
+echo "35. Testing AM.PUTDIFF notification..."
 redis-cli -h "$HOST" del notif_test12
 redis-cli -h "$HOST" am.new notif_test12
+redis-cli -h "$HOST" am.puttext notif_test12 field "Hello World"
+diff_data="--- a/field
++++ b/field
+@@ -1 +1 @@
+-Hello World
++Hello Redis
+"
+test_notification "notif_test12" "am.putdiff" "echo '$diff_data' | redis-cli -h $HOST -x am.putdiff notif_test12 field"
+echo "   ✓ AM.PUTDIFF emits keyspace notification"
+
+echo "31. Testing AM.APPLY notification..."
+redis-cli -h "$HOST" del notif_test13
+redis-cli -h "$HOST" am.new notif_test13
 # Create a change to apply
 redis-cli -h "$HOST" am.new temp_doc
 redis-cli -h "$HOST" am.puttext temp_doc field "value"
