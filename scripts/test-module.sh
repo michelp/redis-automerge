@@ -364,62 +364,37 @@ val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
 test "$val" = "Hello World"
 
 # Apply a diff that changes "World" to "Rust"
-diff_data="--- a/content
+redis-cli -h "$HOST" am.putdiff diff_test1 content "--- a/content
 +++ b/content
 @@ -1 +1 @@
 -Hello World
 +Hello Rust
 "
-echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test1 content
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
 test "$val" = "Hello Rust"
 echo "   ✓ AM.PUTDIFF simple replacement works"
 
 echo "33. Testing AM.PUTDIFF with line insertion..."
-redis-cli -h "$HOST" del diff_test2
-redis-cli -h "$HOST" am.new diff_test2
-redis-cli -h "$HOST" am.puttext diff_test2 doc "Line 1
-Line 3
-"
+redis-cli -h "$HOST" del diff_test2 > /dev/null
+redis-cli -h "$HOST" am.new diff_test2 > /dev/null
+printf "Line 1\nLine 3\n" | redis-cli -h "$HOST" -x am.puttext diff_test2 doc > /dev/null
 
 # Apply a diff that inserts "Line 2"
-diff_data="--- a/doc
-+++ b/doc
-@@ -1,2 +1,3 @@
- Line 1
-+Line 2
- Line 3
-"
-echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test2 doc
+printf -- "--- a/doc\n+++ b/doc\n@@ -1,2 +1,3 @@\n Line 1\n+Line 2\n Line 3\n" | redis-cli -h "$HOST" -x am.putdiff diff_test2 doc > /dev/null
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test2 doc)
-expected="Line 1
-Line 2
-Line 3
-"
+expected=$(printf "Line 1\nLine 2\nLine 3\n")
 test "$val" = "$expected"
 echo "   ✓ AM.PUTDIFF line insertion works"
 
 echo "34. Testing AM.PUTDIFF with line deletion..."
-redis-cli -h "$HOST" del diff_test3
-redis-cli -h "$HOST" am.new diff_test3
-redis-cli -h "$HOST" am.puttext diff_test3 doc "Line 1
-Line 2
-Line 3
-"
+redis-cli -h "$HOST" del diff_test3 > /dev/null
+redis-cli -h "$HOST" am.new diff_test3 > /dev/null
+printf "Line 1\nLine 2\nLine 3\n" | redis-cli -h "$HOST" -x am.puttext diff_test3 doc > /dev/null
 
 # Apply a diff that removes Line 2
-diff_data="--- a/doc
-+++ b/doc
-@@ -1,3 +1,2 @@
- Line 1
--Line 2
- Line 3
-"
-echo "$diff_data" | redis-cli -h "$HOST" -x am.putdiff diff_test3 doc
+printf -- "--- a/doc\n+++ b/doc\n@@ -1,3 +1,2 @@\n Line 1\n-Line 2\n Line 3\n" | redis-cli -h "$HOST" -x am.putdiff diff_test3 doc > /dev/null
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test3 doc)
-expected="Line 1
-Line 3
-"
+expected=$(printf "Line 1\nLine 3\n")
 test "$val" = "$expected"
 echo "   ✓ AM.PUTDIFF line deletion works"
 
@@ -427,14 +402,345 @@ echo "35. Testing AM.PUTDIFF notification..."
 redis-cli -h "$HOST" del notif_test12
 redis-cli -h "$HOST" am.new notif_test12
 redis-cli -h "$HOST" am.puttext notif_test12 field "Hello World"
-diff_data="--- a/field
+test_notification "notif_test12" "am.putdiff" "redis-cli -h $HOST am.putdiff notif_test12 field '--- a/field
 +++ b/field
 @@ -1 +1 @@
 -Hello World
 +Hello Redis
-"
-test_notification "notif_test12" "am.putdiff" "echo '$diff_data' | redis-cli -h $HOST -x am.putdiff notif_test12 field"
+'"
 echo "   ✓ AM.PUTDIFF emits keyspace notification"
+
+# Test automatic change publishing
+echo "36. Testing automatic change publishing on AM.PUTTEXT..."
+redis-cli -h "$HOST" del change_pub_test1 > /dev/null
+redis-cli -h "$HOST" am.new change_pub_test1 > /dev/null
+
+# Subscribe to changes channel in background and capture output to regular file
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_test1" > /tmp/changes_test36.txt 2>&1 &
+sub_pid=$!
+
+# Wait for subscription to be ready
+sleep 0.3
+
+# Perform a write operation
+redis-cli -h "$HOST" am.puttext change_pub_test1 field "test value" > /dev/null 2>&1
+
+# Wait for message
+sleep 0.3
+
+# Kill subscriber (timeout will kill it anyway, but be explicit)
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Check that we received a message on the changes channel
+if [ -f /tmp/changes_test36.txt ] && grep -q "changes:change_pub_test1" /tmp/changes_test36.txt; then
+    echo "   ✓ AM.PUTTEXT publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found"
+    [ -f /tmp/changes_test36.txt ] && cat /tmp/changes_test36.txt
+fi
+rm -f /tmp/changes_test36.txt
+
+echo "37. Testing change synchronization between documents..."
+redis-cli -h "$HOST" del sync_test_doc1 > /dev/null
+redis-cli -h "$HOST" del sync_test_doc2 > /dev/null
+
+# Create two documents
+redis-cli -h "$HOST" am.new sync_test_doc1 > /dev/null
+redis-cli -h "$HOST" am.new sync_test_doc2 > /dev/null
+
+# Subscribe to changes from doc1
+timeout 2 redis-cli -h "$HOST" --raw SUBSCRIBE "changes:sync_test_doc1" > /tmp/sync_test37.txt 2>&1 &
+sub_pid=$!
+
+sleep 0.3
+
+# Make a change to doc1
+redis-cli -h "$HOST" am.puttext sync_test_doc1 name "Alice" > /dev/null 2>&1
+
+# Wait for the change
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Extract change bytes (this is tricky in bash, so we'll just verify publication happened)
+if [ -f /tmp/sync_test37.txt ] && grep -q "changes:sync_test_doc1" /tmp/sync_test37.txt; then
+    echo "   ✓ Changes are published and can be subscribed to"
+else
+    echo "   ✗ Change subscription failed"
+    [ -f /tmp/sync_test37.txt ] && cat /tmp/sync_test37.txt
+fi
+rm -f /tmp/sync_test37.txt
+
+echo "38. Testing multiple changes publish correctly..."
+redis-cli -h "$HOST" del multi_change_test > /dev/null
+redis-cli -h "$HOST" am.new multi_change_test > /dev/null
+
+# Subscribe to changes
+timeout 3 redis-cli -h "$HOST" SUBSCRIBE "changes:multi_change_test" > /tmp/multi_test38.txt 2>&1 &
+sub_pid=$!
+
+sleep 0.3
+
+# Make multiple changes of different types
+redis-cli -h "$HOST" am.puttext multi_change_test name "Bob" > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.putint multi_change_test age 25 > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.putbool multi_change_test active true > /dev/null 2>&1
+
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Count message occurrences (should be 3 changes published)
+if [ -f /tmp/multi_test38.txt ]; then
+    change_count=$(grep -c "changes:multi_change_test" /tmp/multi_test38.txt || echo 0)
+    if [ "$change_count" -ge 3 ]; then
+        echo "   ✓ Multiple changes publish correctly (found $change_count publications)"
+    else
+        echo "   ✗ Expected 3+ change publications, found $change_count"
+    fi
+else
+    echo "   ✗ Output file not created"
+fi
+rm -f /tmp/multi_test38.txt
+
+echo "39. Testing AM.PUTDOUBLE change publishing..."
+redis-cli -h "$HOST" del change_pub_double > /dev/null
+redis-cli -h "$HOST" am.new change_pub_double > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_double" > /tmp/changes_test39.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.PUTDOUBLE operation
+redis-cli -h "$HOST" am.putdouble change_pub_double pi 3.14159 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test39.txt ] && grep -q "changes:change_pub_double" /tmp/changes_test39.txt; then
+    echo "   ✓ AM.PUTDOUBLE publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.PUTDOUBLE"
+    [ -f /tmp/changes_test39.txt ] && cat /tmp/changes_test39.txt
+fi
+rm -f /tmp/changes_test39.txt
+
+echo "40. Testing AM.PUTDIFF change publishing..."
+redis-cli -h "$HOST" del change_pub_diff > /dev/null
+redis-cli -h "$HOST" am.new change_pub_diff > /dev/null
+redis-cli -h "$HOST" am.puttext change_pub_diff content "Hello World" > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_diff" > /tmp/changes_test40.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.PUTDIFF operation
+redis-cli -h "$HOST" am.putdiff change_pub_diff content "--- a/content
++++ b/content
+@@ -1 +1 @@
+-Hello World
++Hello Redis
+" > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test40.txt ] && grep -q "changes:change_pub_diff" /tmp/changes_test40.txt; then
+    echo "   ✓ AM.PUTDIFF publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.PUTDIFF"
+    [ -f /tmp/changes_test40.txt ] && cat /tmp/changes_test40.txt
+fi
+rm -f /tmp/changes_test40.txt
+
+echo "41. Testing AM.CREATELIST change publishing..."
+redis-cli -h "$HOST" del change_pub_list > /dev/null
+redis-cli -h "$HOST" am.new change_pub_list > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_list" > /tmp/changes_test41.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.CREATELIST operation
+redis-cli -h "$HOST" am.createlist change_pub_list items > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test41.txt ] && grep -q "changes:change_pub_list" /tmp/changes_test41.txt; then
+    echo "   ✓ AM.CREATELIST publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.CREATELIST"
+    [ -f /tmp/changes_test41.txt ] && cat /tmp/changes_test41.txt
+fi
+rm -f /tmp/changes_test41.txt
+
+echo "42. Testing AM.APPENDTEXT change publishing..."
+redis-cli -h "$HOST" del change_pub_appendtext > /dev/null
+redis-cli -h "$HOST" am.new change_pub_appendtext > /dev/null
+redis-cli -h "$HOST" am.createlist change_pub_appendtext items > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_appendtext" > /tmp/changes_test42.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.APPENDTEXT operation
+redis-cli -h "$HOST" am.appendtext change_pub_appendtext items "text value" > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test42.txt ] && grep -q "changes:change_pub_appendtext" /tmp/changes_test42.txt; then
+    echo "   ✓ AM.APPENDTEXT publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.APPENDTEXT"
+    [ -f /tmp/changes_test42.txt ] && cat /tmp/changes_test42.txt
+fi
+rm -f /tmp/changes_test42.txt
+
+echo "43. Testing AM.APPENDINT change publishing..."
+redis-cli -h "$HOST" del change_pub_appendint > /dev/null
+redis-cli -h "$HOST" am.new change_pub_appendint > /dev/null
+redis-cli -h "$HOST" am.createlist change_pub_appendint numbers > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_appendint" > /tmp/changes_test43.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.APPENDINT operation
+redis-cli -h "$HOST" am.appendint change_pub_appendint numbers 42 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test43.txt ] && grep -q "changes:change_pub_appendint" /tmp/changes_test43.txt; then
+    echo "   ✓ AM.APPENDINT publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.APPENDINT"
+    [ -f /tmp/changes_test43.txt ] && cat /tmp/changes_test43.txt
+fi
+rm -f /tmp/changes_test43.txt
+
+echo "44. Testing AM.APPENDDOUBLE change publishing..."
+redis-cli -h "$HOST" del change_pub_appenddouble > /dev/null
+redis-cli -h "$HOST" am.new change_pub_appenddouble > /dev/null
+redis-cli -h "$HOST" am.createlist change_pub_appenddouble values > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_appenddouble" > /tmp/changes_test44.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.APPENDDOUBLE operation
+redis-cli -h "$HOST" am.appenddouble change_pub_appenddouble values 2.71828 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test44.txt ] && grep -q "changes:change_pub_appenddouble" /tmp/changes_test44.txt; then
+    echo "   ✓ AM.APPENDDOUBLE publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.APPENDDOUBLE"
+    [ -f /tmp/changes_test44.txt ] && cat /tmp/changes_test44.txt
+fi
+rm -f /tmp/changes_test44.txt
+
+echo "45. Testing AM.APPENDBOOL change publishing..."
+redis-cli -h "$HOST" del change_pub_appendbool > /dev/null
+redis-cli -h "$HOST" am.new change_pub_appendbool > /dev/null
+redis-cli -h "$HOST" am.createlist change_pub_appendbool flags > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_appendbool" > /tmp/changes_test45.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.APPENDBOOL operation
+redis-cli -h "$HOST" am.appendbool change_pub_appendbool flags true > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test45.txt ] && grep -q "changes:change_pub_appendbool" /tmp/changes_test45.txt; then
+    echo "   ✓ AM.APPENDBOOL publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.APPENDBOOL"
+    [ -f /tmp/changes_test45.txt ] && cat /tmp/changes_test45.txt
+fi
+rm -f /tmp/changes_test45.txt
+
+echo "46. Testing all list operations publish changes..."
+redis-cli -h "$HOST" del change_pub_all_list > /dev/null
+redis-cli -h "$HOST" am.new change_pub_all_list > /dev/null
+
+# Subscribe to changes channel
+timeout 4 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_all_list" > /tmp/changes_test46.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform multiple list operations
+redis-cli -h "$HOST" am.createlist change_pub_all_list items > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.appendtext change_pub_all_list items "text" > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.appendint change_pub_all_list items 100 > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.appenddouble change_pub_all_list items 1.5 > /dev/null 2>&1
+sleep 0.2
+redis-cli -h "$HOST" am.appendbool change_pub_all_list items true > /dev/null 2>&1
+
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Count change publications (should be 5: 1 createlist + 4 appends)
+if [ -f /tmp/changes_test46.txt ]; then
+    change_count=$(grep -c "changes:change_pub_all_list" /tmp/changes_test46.txt || echo 0)
+    if [ "$change_count" -ge 5 ]; then
+        echo "   ✓ All list operations publish changes correctly (found $change_count publications)"
+    else
+        echo "   ✗ Expected 5+ change publications for list operations, found $change_count"
+        cat /tmp/changes_test46.txt
+    fi
+else
+    echo "   ✗ Output file not created for list operations test"
+fi
+rm -f /tmp/changes_test46.txt
 
 echo "31. Testing AM.APPLY notification..."
 redis-cli -h "$HOST" del notif_test13

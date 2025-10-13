@@ -169,13 +169,30 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let key_name = &args[1];
     let field = parse_utf8_field(&args[2], "field")?;
     let value = parse_utf8_value(&args[3])?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .put_text(field, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture the change bytes BEFORE opening the key
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_text_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.puttext", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttext", key_name);
@@ -208,13 +225,30 @@ fn am_putdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let key_name = &args[1];
     let field = parse_utf8_field(&args[2], "field")?;
     let diff = parse_utf8_value(&args[3])?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .put_diff(field, diff)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_diff_with_change(field, diff)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putdiff", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdiff", key_name);
@@ -230,13 +264,30 @@ fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: i64 = args[3]
         .parse_integer()
         .map_err(|_| RedisError::Str("value must be an integer"))?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .put_int(field, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_int_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putint", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putint", key_name);
@@ -271,13 +322,30 @@ fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: f64 = parse_utf8_value(&args[3])?
         .parse()
         .map_err(|_| RedisError::Str("value must be a valid double"))?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .put_double(field, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_double_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putdouble", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdouble", key_name);
@@ -315,13 +383,30 @@ fn am_putbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         "false" | "0" => false,
         _ => return Err(RedisError::Str("value must be true/false or 1/0")),
     };
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .put_bool(field, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_bool_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.putbool", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putbool", key_name);
@@ -353,13 +438,30 @@ fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
     let key_name = &args[1];
     let path = parse_utf8_field(&args[2], "path")?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .create_list(path)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .create_list_with_change(path)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.createlist", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.createlist", key_name);
@@ -373,13 +475,30 @@ fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let key_name = &args[1];
     let path = parse_utf8_field(&args[2], "path")?;
     let value = parse_utf8_value(&args[3])?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .append_text(path, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .append_text_with_change(path, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendtext", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendtext", key_name);
@@ -395,13 +514,30 @@ fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: i64 = args[3]
         .parse_integer()
         .map_err(|_| RedisError::Str("value must be an integer"))?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .append_int(path, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .append_int_with_change(path, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendint", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendint", key_name);
@@ -417,13 +553,30 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: f64 = parse_utf8_value(&args[3])?
         .parse()
         .map_err(|_| RedisError::Str("value must be a valid double"))?;
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .append_double(path, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .append_double_with_change(path, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appenddouble", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appenddouble", key_name);
@@ -442,13 +595,30 @@ fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         "false" | "0" => false,
         _ => return Err(RedisError::Str("value must be true/false or 1/0")),
     };
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    client
-        .append_bool(path, value)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .append_bool_with_change(path, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    if let Some(change) = change_bytes {
+        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        // Base64 encode binary change data to avoid null byte issues
+        use base64::{Engine as _, engine::general_purpose};
+        let encoded_change = general_purpose::STANDARD.encode(&change);
+        let ctx_ptr = unsafe { std::ptr::NonNull::new(ctx.ctx) };
+        let channel_str = redis_module::RedisString::create(ctx_ptr, channel_name.as_bytes());
+        let change_str = redis_module::RedisString::create(ctx_ptr, encoded_change.as_bytes());
+        ctx.call("PUBLISH", &[&channel_str, &change_str])?;
+    }
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.appendbool", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendbool", key_name);
@@ -989,5 +1159,59 @@ mod tests {
             client.get_text("doc").unwrap(),
             Some("Line 1\nLine 3\n".to_string())
         );
+    }
+
+    #[test]
+    fn put_text_returns_change_bytes() {
+        let mut client = RedisAutomergeClient::new();
+
+        // First operation - should return change bytes
+        let change_bytes = client.put_text_with_change("field", "hello").unwrap();
+        assert!(change_bytes.is_some(), "First change should return bytes");
+
+        // Create a second client and apply the change
+        let mut client2 = RedisAutomergeClient::new();
+        client2.apply_change_bytes(&change_bytes.unwrap()).unwrap();
+
+        // Second client should have the same value
+        assert_eq!(
+            client2.get_text("field").unwrap(),
+            Some("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn put_int_returns_change_bytes() {
+        let mut client = RedisAutomergeClient::new();
+
+        let change_bytes = client.put_int_with_change("count", 42).unwrap();
+        assert!(change_bytes.is_some());
+
+        // Apply to another client
+        let mut client2 = RedisAutomergeClient::new();
+        client2.apply_change_bytes(&change_bytes.unwrap()).unwrap();
+
+        assert_eq!(client2.get_int("count").unwrap(), Some(42));
+    }
+
+    #[test]
+    fn multiple_changes_sync() {
+        let mut client1 = RedisAutomergeClient::new();
+
+        // Make several changes
+        let change1 = client1.put_text_with_change("name", "Alice").unwrap().unwrap();
+        let change2 = client1.put_int_with_change("age", 30).unwrap().unwrap();
+        let change3 = client1.put_bool_with_change("active", true).unwrap().unwrap();
+
+        // Apply all changes to client2
+        let mut client2 = RedisAutomergeClient::new();
+        client2.apply_change_bytes(&change1).unwrap();
+        client2.apply_change_bytes(&change2).unwrap();
+        client2.apply_change_bytes(&change3).unwrap();
+
+        // Verify all values synced
+        assert_eq!(client2.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client2.get_int("age").unwrap(), Some(30));
+        assert_eq!(client2.get_bool("active").unwrap(), Some(true));
     }
 }

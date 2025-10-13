@@ -9,3 +9,4 @@ crate-type = ["cdylib"]
 [dependencies]
 automerge = "0.6.1"
 redis-module = "2"
+base64 = "0.22"
