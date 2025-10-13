@@ -18,6 +18,7 @@
 //! ## Value Operations
 //! - `AM.PUTTEXT <key> <path> <value>` - Set a text value
 //! - `AM.GETTEXT <key> <path>` - Get a text value
+//! - `AM.PUTDIFF <key> <path> <diff>` - Apply a unified diff to update text efficiently
 //! - `AM.PUTINT <key> <path> <value>` - Set an integer value
 //! - `AM.GETINT <key> <path>` - Get an integer value
 //! - `AM.PUTDOUBLE <key> <path> <value>` - Set a double value
@@ -198,6 +199,26 @@ fn am_gettext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         Some(text) => Ok(RedisValue::BulkString(text)),
         None => Ok(RedisValue::Null),
     }
+}
+
+fn am_putdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let diff = parse_utf8_value(&args[3])?;
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    client
+        .put_diff(field, diff)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.putdiff", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdiff", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
 fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -523,6 +544,7 @@ redis_module! {
         ["am.apply", am_apply, "write deny-oom", 1, 1, 1],
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
+        ["am.putdiff", am_putdiff, "write deny-oom", 1, 1, 1],
         ["am.putint", am_putint, "write deny-oom", 1, 1, 1],
         ["am.getint", am_getint, "readonly", 1, 1, 1],
         ["am.putdouble", am_putdouble, "write deny-oom", 1, 1, 1],
@@ -893,6 +915,79 @@ mod tests {
         assert_eq!(
             client.get_text("$.users[0]").unwrap(),
             Some("user0".to_string())
+        );
+    }
+
+    #[test]
+    fn put_diff_simple_replacement() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("content", "Hello World").unwrap();
+        assert_eq!(
+            client.get_text("content").unwrap(),
+            Some("Hello World".to_string())
+        );
+
+        // Apply a diff that changes "World" to "Rust"
+        // Unified diff format
+        let diff = r#"--- a/content
++++ b/content
+@@ -1 +1 @@
+-Hello World
++Hello Rust
+"#;
+        client.put_diff("content", diff).unwrap();
+
+        assert_eq!(
+            client.get_text("content").unwrap(),
+            Some("Hello Rust".to_string())
+        );
+    }
+
+    #[test]
+    fn put_diff_insertion() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text with multiple lines
+        client.put_text("doc", "Line 1\nLine 3\n").unwrap();
+
+        // Apply a diff that inserts "Line 2" between Line 1 and Line 3
+        let diff = r#"--- a/doc
++++ b/doc
+@@ -1,2 +1,3 @@
+ Line 1
++Line 2
+ Line 3
+"#;
+        client.put_diff("doc", diff).unwrap();
+
+        assert_eq!(
+            client.get_text("doc").unwrap(),
+            Some("Line 1\nLine 2\nLine 3\n".to_string())
+        );
+    }
+
+    #[test]
+    fn put_diff_deletion() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Set initial text
+        client.put_text("doc", "Line 1\nLine 2\nLine 3\n").unwrap();
+
+        // Apply a diff that removes Line 2
+        let diff = r#"--- a/doc
++++ b/doc
+@@ -1,3 +1,2 @@
+ Line 1
+-Line 2
+ Line 3
+"#;
+        client.put_diff("doc", diff).unwrap();
+
+        assert_eq!(
+            client.get_text("doc").unwrap(),
+            Some("Line 1\nLine 3\n".to_string())
         );
     }
 }
