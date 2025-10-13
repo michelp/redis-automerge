@@ -417,12 +417,18 @@ impl RedisAutomergeClient {
             }
         };
 
-        if let Some((Value::Scalar(s), _)) =
-            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
-        {
-            if let ScalarValue::Str(t) = s.as_ref() {
-                return Ok(Some(t.to_string()));
+        match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            // Handle scalar string values
+            Some((Value::Scalar(s), _)) => {
+                if let ScalarValue::Str(t) = s.as_ref() {
+                    return Ok(Some(t.to_string()));
+                }
             }
+            // Handle Text objects
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => {
+                return Ok(Some(self.doc.text(&obj_id)?));
+            }
+            _ => {}
         }
         Ok(None)
     }
@@ -1294,6 +1300,209 @@ impl RedisAutomergeClient {
         };
 
         Ok(Some(self.doc.length(&list_obj)))
+    }
+
+    /// Splice text at the specified path.
+    ///
+    /// This performs an in-place text splice operation using Automerge's `splice_text` method,
+    /// which is more efficient than replacing the entire text value. The splice operation
+    /// deletes `del` characters starting at position `pos` and inserts `text` at that position.
+    ///
+    /// If the field contains a string scalar, it will be converted to a Text object first.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the text field
+    /// * `pos` - Character position where the splice begins (0-indexed)
+    /// * `del` - Number of characters to delete (can be negative to delete backwards)
+    /// * `text` - Text to insert at the position
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("greeting", "Hello World").unwrap();
+    ///
+    /// // Replace "World" with "Rust" - delete 5 chars at position 6 and insert "Rust"
+    /// client.splice_text("greeting", 6, 5, "Rust").unwrap();
+    ///
+    /// assert_eq!(client.get_text("greeting").unwrap(), Some("Hello Rust".to_string()));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The path is invalid or doesn't exist
+    /// - The value at path is not text
+    /// - The position or deletion count is invalid
+    pub fn splice_text(
+        &mut self,
+        path: &str,
+        pos: usize,
+        del: isize,
+        text: &str,
+    ) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        tx.splice_text(&text_obj, pos, del, text)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Splice text and return the raw change bytes.
+    ///
+    /// Like `splice_text()` but returns Automerge change bytes that can
+    /// be published to other clients for real-time synchronization.
+    ///
+    /// If the field contains a string scalar, it will be converted to a Text object first.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the text field
+    /// * `pos` - Character position where the splice begins (0-indexed)
+    /// * `del` - Number of characters to delete (can be negative to delete backwards)
+    /// * `text` - Text to insert at the position
+    ///
+    /// # Returns
+    ///
+    /// - `Some(Vec<u8>)` - Raw change bytes if a change was generated
+    /// - `None` - If no change was needed
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("doc", "Hello World").unwrap();
+    ///
+    /// let change = client.splice_text_with_change("doc", 6, 5, "Rust").unwrap();
+    ///
+    /// if let Some(change_bytes) = change {
+    ///     // Publish to other clients
+    /// }
+    /// ```
+    pub fn splice_text_with_change(
+        &mut self,
+        path: &str,
+        pos: usize,
+        del: isize,
+        text: &str,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        tx.splice_text(&text_obj, pos, del, text)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
     }
 }
 
