@@ -10,7 +10,9 @@ Interactive command interface for testing all Redis-Automerge operations.
 ### 2. Collaborative Editor (editor.html)
 Real-time collaborative text editor demonstrating CRDT synchronization with side-by-side editors.
 
-**[See Collaborative Editor Documentation →](COLLABORATIVE_EDITOR.md)**
+**Modes:**
+- **[Dual-Pane Editor](COLLABORATIVE_EDITOR.md)**: Side-by-side editors demonstrating real-time sync
+- **[Shareable Link Editor](SHAREABLE_EDITOR.md)**: Single-pane editor with shareable rooms (NEW)
 
 ## Features
 
