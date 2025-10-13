@@ -14,4 +14,4 @@ CMD ["redis-server", \
      "--logfile", "", \
      "--slowlog-log-slower-than", "0", \
      "--slowlog-max-len", "128", \
-     "--notify-keyspace-events", "AKEm"]
+     "--notify-keyspace-events", "KEA"]
