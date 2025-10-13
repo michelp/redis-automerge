@@ -15,6 +15,10 @@ let isSyncing = false;
 let leftSocket = null;
 let rightSocket = null;
 
+// Track previous text state for calculating diffs
+let leftPrevText = '';
+let rightPrevText = '';
+
 /**
  * Generate a unique peer ID for this editor instance.
  * Used to identify which peer made changes and to filter out our own messages.
@@ -69,6 +73,43 @@ function debounce(func, wait) {
         clearTimeout(timeout);
         timeout = setTimeout(later, wait);
     };
+}
+
+/**
+ * Calculate the difference between two strings and return splice operation parameters.
+ * Finds the common prefix and suffix to determine the minimal change.
+ * @param {string} oldText - The previous text
+ * @param {string} newText - The new text
+ * @returns {Object|null} Object with {pos, del, text} or null if no change
+ */
+function calculateSplice(oldText, newText) {
+    // Find common prefix
+    let prefixLen = 0;
+    const minLen = Math.min(oldText.length, newText.length);
+    while (prefixLen < minLen && oldText[prefixLen] === newText[prefixLen]) {
+        prefixLen++;
+    }
+
+    // Find common suffix
+    let suffixLen = 0;
+    const oldEnd = oldText.length;
+    const newEnd = newText.length;
+    while (suffixLen < minLen - prefixLen &&
+           oldText[oldEnd - suffixLen - 1] === newText[newEnd - suffixLen - 1]) {
+        suffixLen++;
+    }
+
+    // Calculate splice parameters
+    const pos = prefixLen;
+    const del = oldEnd - prefixLen - suffixLen;
+    const text = newText.substring(prefixLen, newEnd - suffixLen);
+
+    // No change if nothing was deleted and nothing was inserted
+    if (del === 0 && text.length === 0) {
+        return null;
+    }
+
+    return { pos, del, text };
 }
 
 /**
@@ -175,6 +216,12 @@ async function initializeDocument() {
         const newResponse = await fetch(`${WEBDIS_URL}/AM.NEW/${docKey}`);
         const newData = await newResponse.json();
         log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
+
+        // Initialize the text field with empty string so AM.SPLICETEXT can work
+        // Use GET with empty string parameter since Webdis PUT doesn't handle empty body well
+        const initResponse = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/`);
+        const initData = await initResponse.json();
+        log(`Text field initialized: ${JSON.stringify(initData)}`, 'server');
 
         log('Server document created successfully', 'server');
         log('Click "Connect Editors" to load and start syncing', 'server');
@@ -336,7 +383,7 @@ function setupWebSocket(editor, docKey) {
  * Called when an external client modifies the document.
  * @param {string} editor - Which editor ('left' or 'right')
  * @param {string} docKey - The document key
- * @param {string} command - The Redis command that triggered the notification (e.g., "am.puttext")
+ * @param {string} command - The Redis command that triggered the notification (e.g., "am.splicetext")
  */
 async function handleKeyspaceNotification(editor, docKey, command) {
     try {
@@ -369,7 +416,7 @@ async function handleKeyspaceNotification(editor, docKey, command) {
                     rightDoc = newDoc;
                 }
 
-                // Update the editor UI
+                // Update the editor UI (will also update prevText)
                 updateEditor(editor);
                 updateDocInfo(editor);
             }
@@ -446,9 +493,10 @@ function stopSync() {
 
 /**
  * Handle local editor changes and sync to server.
- * Captures Automerge changes and applies to server via AM.PUTTEXT.
+ * Calculates the minimal diff and applies to server via AM.SPLICETEXT.
  * Server automatically publishes changes to the changes:{key} channel.
  * Debounced to avoid excessive updates during rapid typing.
+ * Preserves cursor position by tracking change location.
  * @param {string} editor - Which editor ('left' or 'right')
  */
 async function handleEdit(editor) {
@@ -458,72 +506,75 @@ async function handleEdit(editor) {
     const textarea = document.getElementById(`editor-${editor}`);
     const newText = textarea.value;
 
-    // Get current document
-    const oldDoc = editor === 'left' ? leftDoc : rightDoc;
+    // Get previous text for this editor
+    const oldText = editor === 'left' ? leftPrevText : rightPrevText;
 
-    // Don't update if text hasn't changed
-    if (oldDoc && oldDoc.text === newText) {
+    // Calculate the minimal splice operation
+    const splice = calculateSplice(oldText, newText);
+
+    if (!splice) {
+        // No change detected
         return;
     }
+
+    console.log(`[${editor}] Splice calculated:`, splice);
+
+    // Get current document
+    const oldDoc = editor === 'left' ? leftDoc : rightDoc;
 
     // Create new document with changes
     const newDoc = Automerge.change(oldDoc, d => {
         d.text = newText;
     });
 
-    // Get the changes between old and new document
-    const changes = Automerge.getChanges(oldDoc, newDoc);
-
-    console.log(`[${editor}] Changes generated:`, changes);
-    console.log(`[${editor}] Old doc text: "${oldDoc.text}", New doc text: "${newDoc.text}"`);
-
     // Update the document reference
     if (editor === 'left') {
         leftDoc = newDoc;
+        leftPrevText = newText;
     } else {
         rightDoc = newDoc;
+        rightPrevText = newText;
     }
 
-    log(`[${editor}] Local edit detected, applying ${changes.length} change(s) to server`, editor);
+    log(`[${editor}] Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, editor);
 
-    // Apply changes to server document via AM.PUTTEXT
+    // Apply changes to server document via AM.SPLICETEXT
     // Server will automatically publish changes to the changes:{key} channel
-    await applyChangesToServer(docKey, newDoc);
+    await applySpliceToServer(docKey, splice);
 
     updateDocInfo(editor);
 }
 
 /**
- * Update the server document with the current text.
- * Uses AM.PUTTEXT to keep the server's text field in sync.
+ * Apply a splice operation to the server document.
+ * Uses AM.SPLICETEXT to apply incremental changes efficiently.
+ * Server automatically publishes changes to the changes:{key} channel.
  * @param {string} docKey - The document key
- * @param {Object} doc - The Automerge document with the current state
+ * @param {Object} splice - The splice operation {pos, del, text}
  */
-async function applyChangesToServer(docKey, doc) {
+async function applySpliceToServer(docKey, splice) {
     try {
-        // Use AM.PUTTEXT via PUT to update the server's text field directly
+        // Use AM.SPLICETEXT via PUT to apply the splice operation
         // Webdis PUT format: PUT /COMMAND/arg1/arg2/... with body as last argument
-        if (doc && doc.text !== undefined) {
-            const response = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'text/plain'
-                },
-                body: doc.text
-            });
-            const data = await response.json();
+        const response = await fetch(`${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'text/plain'
+            },
+            body: splice.text
+        });
+        const data = await response.json();
 
-            console.log('AM.PUTTEXT response:', data);
+        console.log('AM.SPLICETEXT response:', data);
 
-            if (data['AM.PUTTEXT'] && data['AM.PUTTEXT'][0] === true) {
-                // log('Server text updated successfully', 'server');
-            } else {
-                log(`AM.PUTTEXT error: ${JSON.stringify(data)}`, 'error');
-            }
+        if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
+            // log('Server splice applied successfully', 'server');
+        } else {
+            log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
         }
     } catch (error) {
-        log(`Error updating server: ${error.message}`, 'error');
-        console.error('Server update error:', error);
+        log(`Error applying splice to server: ${error.message}`, 'error');
+        console.error('Server splice error:', error);
     }
 }
 
@@ -546,6 +597,10 @@ async function loadFromRedis(docKey) {
         leftDoc = Automerge.clone(initialDoc);
         rightDoc = Automerge.clone(initialDoc);
 
+        // Initialize previous text state for diff tracking
+        leftPrevText = '';
+        rightPrevText = '';
+
         updateEditor('left');
         updateEditor('right');
         updateDocInfo('left');
@@ -562,7 +617,7 @@ async function loadFromRedis(docKey) {
 
 /**
  * Update the editor textarea to reflect the current document state.
- * Preserves cursor position when possible to avoid disrupting typing.
+ * Intelligently preserves cursor position by calculating the splice that was applied.
  * Called after applying remote changes or loading document.
  * @param {string} editor - Which editor ('left' or 'right')
  */
@@ -571,14 +626,61 @@ function updateEditor(editor) {
     if (!doc) return;
 
     const textarea = document.getElementById(`editor-${editor}`);
-    const currentPos = textarea.selectionStart;
+    const oldText = textarea.value;
+    const newText = doc.text || '';
+    const cursorPos = textarea.selectionStart;
+    const cursorEnd = textarea.selectionEnd;
 
-    // Only update if text differs to preserve cursor position
-    if (doc.text !== textarea.value) {
-        textarea.value = doc.text || '';
+    // Only update if text differs
+    if (newText !== oldText) {
+        // Calculate the splice to determine cursor adjustment
+        const splice = calculateSplice(oldText, newText);
 
-        // Try to preserve cursor position
-        textarea.setSelectionRange(currentPos, currentPos);
+        textarea.value = newText;
+
+        if (splice) {
+            // Adjust cursor position based on the splice operation
+            let newCursorPos = cursorPos;
+            let newCursorEnd = cursorEnd;
+
+            // If cursor is after the change position, adjust it
+            if (cursorPos >= splice.pos) {
+                // Calculate net change in text length
+                const netChange = splice.text.length - splice.del;
+
+                if (cursorPos <= splice.pos + splice.del) {
+                    // Cursor was inside the deleted range, move it to end of insertion
+                    newCursorPos = splice.pos + splice.text.length;
+                } else {
+                    // Cursor was after the deleted range, shift by net change
+                    newCursorPos = cursorPos + netChange;
+                }
+
+                // Adjust selection end similarly
+                if (cursorEnd <= splice.pos + splice.del) {
+                    newCursorEnd = splice.pos + splice.text.length;
+                } else {
+                    newCursorEnd = cursorEnd + netChange;
+                }
+            }
+
+            // Ensure cursor positions are within valid range
+            newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
+            newCursorEnd = Math.max(0, Math.min(newCursorEnd, newText.length));
+
+            textarea.setSelectionRange(newCursorPos, newCursorEnd);
+        } else {
+            // No splice calculated, try to preserve original position
+            const safePos = Math.min(cursorPos, newText.length);
+            textarea.setSelectionRange(safePos, safePos);
+        }
+
+        // Update previous text state for this editor
+        if (editor === 'left') {
+            leftPrevText = newText;
+        } else {
+            rightPrevText = newText;
+        }
 
         log(`[${editor}] Editor updated from document`, editor);
     }

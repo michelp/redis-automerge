@@ -35,15 +35,16 @@ Each editor maintains an Automerge document:
 }
 ```
 
-### 2. Change Detection
+### 2. Change Detection (Updated - Now Using AM.SPLICETEXT)
 
 When a user types:
-1. Local Automerge document is updated
-2. Changes are extracted: `Automerge.getChanges(oldDoc, newDoc)`
-3. Changes are broadcast to Redis
-4. Document is saved to Redis
+1. **Calculate minimal diff**: Compare old and new text to find the minimal change (position, deletions, insertions)
+2. **Local Automerge document updated**: Changes applied immediately for instant UI feedback
+3. **Incremental splice sent to server**: Only the changed portion via `AM.SPLICETEXT` (position, delete count, text)
+4. **Server publishes change**: Automerge change bytes broadcast to all subscribers
+5. **Cursor position preserved**: Intelligent cursor adjustment based on where the change occurred
 
-### 3. Synchronization Flow
+### 3. Synchronization Flow (Updated - AM.SPLICETEXT)
 
 ```
 Editor A                Redis Pub/Sub           Editor B
@@ -51,14 +52,20 @@ Editor A                Redis Pub/Sub           Editor B
    |                  [WebSocket]            [WebSocket]
    |                      |                      |
    |-- Edit detected ---->|                      |
-   |-- Save full doc ---->|                      |
-   |-- PUBLISH changes -->|                      |
-   |                      |                      |
-   |                      |---- SUBSCRIBE ------>|
-   |                      |      message         |
+   |-- Calculate diff     |                      |
+   |-- AM.SPLICETEXT ---->|                      |
+   |   (pos,del,text)     |                      |
+   |                      |-- publishes -------->|
+   |                      |   change bytes       |
    |                      |                      |-- Apply changes
+   |                      |                      |-- Adjust cursor
    |                      |                      |-- Update UI
 ```
+
+**Key Improvements:**
+- Only changed text is sent (not the entire document)
+- Cursor position intelligently preserved on both local and remote editors
+- Reduced network bandwidth and server processing
 
 ### 4. Conflict Resolution
 
@@ -148,15 +155,17 @@ const doc = Automerge.load(binaryData);
 - **Full State Persistence**: Complete document saved to Redis for new peers to load initial state
 - **Shared Document History**: Both editors initialized from the same base document via `Automerge.clone()`
 
-**Data Flow**:
+**Data Flow (Updated with AM.SPLICETEXT)**:
 1. User types in an editor
 2. Local Automerge document updated immediately (instant UI)
-3. Changes extracted with `Automerge.getChanges()`
-4. Full document saved to Redis via `SET` (for persistence)
-5. Changes published to Redis Pub/Sub channel via `PUBLISH`
-6. Other editors receive via WebSocket `SUBSCRIBE`
-7. Changes applied with `Automerge.applyChanges()`
-8. Remote editor UI updates
+3. **Diff calculated**: Compare previous and current text to find minimal change
+4. **Incremental update**: Send only changed portion via `AM.SPLICETEXT` (position, delete count, insert text)
+5. Server applies splice operation to its Automerge document
+6. Server publishes Automerge change bytes to Redis Pub/Sub channel
+7. Other editors receive change bytes via WebSocket `SUBSCRIBE`
+8. Changes applied with `Automerge.applyChanges()`
+9. **Cursor adjusted**: Remote editor cursor position intelligently updated based on change location
+10. Remote editor UI updates with preserved cursor position
 
 **Production Enhancements**:
 - Change compression: Batch multiple rapid changes
@@ -194,8 +203,46 @@ const doc = Automerge.load(binaryData);
 1. **Single Page Instance**: Both editors are in the same browser tab (for demo purposes)
 2. **Base64 Encoding**: Binary data encoded as base64 adds ~33% overhead
 3. **No Conflict Visualization**: Doesn't highlight merged changes
-4. **Full Document Save**: Entire document saved on each edit (incremental changes only sent via pub/sub)
-5. **No Presence Awareness**: Doesn't show which peer is currently editing
+4. **No Presence Awareness**: Doesn't show which peer is currently editing
+5. **Debounced Updates**: 300ms delay before sending changes (prevents excessive updates during fast typing)
+
+## Cursor Position Preservation
+
+The editor now intelligently preserves cursor position when remote changes are applied:
+
+### How It Works
+
+1. **Track cursor position**: Before applying remote changes, the editor saves the current cursor position
+2. **Calculate the splice**: Determine what changed (position, deleted characters, inserted text)
+3. **Adjust cursor intelligently**:
+   - If cursor is **before** the change: Keep cursor in same position
+   - If cursor is **inside** the deleted range: Move to end of inserted text
+   - If cursor is **after** the change: Shift by the net change in length
+
+### Example Scenarios
+
+**Scenario 1: Remote edit before cursor**
+```
+Before: "Hello |World"  (cursor at position 6)
+Change: Insert "Beautiful " at position 6
+After:  "Hello Beautiful |World"  (cursor moves to position 16)
+```
+
+**Scenario 2: Remote edit after cursor**
+```
+Before: "Hello| World"  (cursor at position 5)
+Change: Insert "Beautiful " at position 6
+After:  "Hello| Beautiful World"  (cursor stays at position 5)
+```
+
+**Scenario 3: Cursor inside deleted text**
+```
+Before: "Hello Wor|ld"  (cursor at position 9)
+Change: Delete "World" and insert "Rust" at position 6
+After:  "Hello Rust|"  (cursor moves to end of insertion at position 10)
+```
+
+This ensures a smooth editing experience where your cursor doesn't jump unexpectedly when others are editing the same document.
 
 ## Future Enhancements
 
@@ -259,6 +306,13 @@ doc = Automerge.load(history[previousIndex].snapshot);
 1. Type quickly in Editor A
 2. Watch debounced sync in logs
 3. See batched updates
+
+### Scenario 4: Cursor Preservation
+1. Type "Hello World" in Editor A
+2. Place cursor in middle of "World" in Editor A (e.g., "Hello Wor|ld")
+3. In Editor B, edit text before the cursor (e.g., insert "Beautiful " between "Hello" and "World")
+4. Observe that Editor A's cursor adjusts correctly and stays in a sensible position
+5. Try editing after the cursor in Editor B - cursor in Editor A should remain stable
 
 ## Debugging
 
