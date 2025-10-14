@@ -96,61 +96,55 @@
 
     <!-- Shareable Editor Mode Panel (new) -->
     <div id="shareable-mode" class="mode-panel hidden">
-        <div class="controls">
-            <div class="status-bar">
-                <span>Connection: </span>
-                <span id="connection-status-shareable" class="status-disconnected">Checking...</span>
-                <span style="margin-left: 20px;">Sync: </span>
-                <span id="sync-status-shareable">Not connected</span>
-            </div>
-        </div>
+        <!-- Left Sidebar: Room List & Management -->
+        <div class="room-sidebar">
+            <h3>Rooms</h3>
 
-        <div id="room-selector" class="room-selector">
-            <h3>Join or Create Room</h3>
-
-            <div id="room-list-container">
-                <button onclick="ShareableMode.refreshRoomList()" class="action-button">
-                    Refresh Room List
-                </button>
+            <div class="room-list-container">
                 <div id="room-list" class="room-list">
                     <!-- Dynamically populated -->
                 </div>
             </div>
 
-            <div class="create-room-controls">
-                <h4>Create New Room</h4>
-                <button onclick="ShareableMode.createRandomRoom()" class="action-button">
-                    Create Random Room
+            <div class="room-management">
+                <h4>Create Room</h4>
+                <button onclick="ShareableMode.createRandomRoom()">
+                    🎲 Random Room
                 </button>
-                <div style="margin-top: 10px;">
-                    <input id="custom-room-name" type="text" placeholder="Or enter custom room name"
-                           style="width: 300px; padding: 5px;">
-                    <button onclick="ShareableMode.createCustomRoom()" class="action-button">
-                        Create Custom Room
-                    </button>
-                </div>
+                <input id="custom-room-name" type="text" placeholder="Custom room name">
+                <button onclick="ShareableMode.createCustomRoom()">
+                    ✏️ Create Custom
+                </button>
+                <button onclick="ShareableMode.refreshRoomList()" style="background: #10b981;">
+                    🔄 Refresh List
+                </button>
             </div>
         </div>
 
-        <div id="editor-container-shareable" class="editor-container hidden">
-            <div id="room-info" class="room-info">
-                <span>Room: <strong id="current-room-name"></strong></span>
-                <button onclick="ShareableMode.copyShareableLink()" class="action-button">
-                    Copy Link
-                </button>
-                <button onclick="ShareableMode.disconnect()" class="action-button">
-                    Disconnect
-                </button>
+        <!-- Right Side: Editor -->
+        <div id="editor-container-shareable" class="editor-main">
+            <div class="editor-toolbar">
+                <div class="room-info">
+                    <span>Room: <strong id="current-room-name">Not connected</strong></span>
+                    <span id="peer-id-shareable" class="peer-id"></span>
+                </div>
+                <div class="toolbar-actions">
+                    <button onclick="ShareableMode.copyShareableLink()" class="action-button">
+                        📋 Copy Link
+                    </button>
+                    <button onclick="ShareableMode.disconnect()" class="action-button" style="background: #ef4444;">
+                        ❌ Disconnect
+                    </button>
+                </div>
             </div>
 
-            <div class="editor-section">
-                <div class="editor-header">
-                    <h3>Shared Editor</h3>
-                    <span id="peer-id-shareable"></span>
+            <div class="editor-content">
+                <textarea id="editor-shareable" placeholder="Select a room or create a new one to start editing..."></textarea>
+                <div class="editor-status-footer">
+                    <span id="connection-status-shareable-editor" class="status-disconnected">Disconnected</span>
+                    <span id="sync-status-shareable-editor">Not syncing</span>
+                    <span id="doc-version-shareable" class="doc-version"></span>
                 </div>
-                <textarea id="editor-shareable" class="editor" placeholder="Start typing..."></textarea>
-                <div id="info-shareable" class="doc-info"></div>
-                <div id="doc-version-shareable" class="doc-version"></div>
             </div>
         </div>
     </div>

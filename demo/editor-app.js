@@ -379,10 +379,8 @@ const ShareableMode = {
         this.currentRoom = roomName;
 
         // Update UI
-        document.getElementById('room-selector').classList.add('hidden');
-        document.getElementById('editor-container-shareable').classList.remove('hidden');
         document.getElementById('current-room-name').textContent = roomName;
-        document.getElementById('sync-status-shareable').textContent = 'Syncing ✓';
+        document.getElementById('sync-status-shareable-editor').textContent = 'Syncing ✓';
 
         // Set up editor event listener
         const editor = document.getElementById('editor-shareable');
@@ -517,15 +515,7 @@ const ShareableMode = {
     updateDocInfo() {
         if (!this.doc) return;
 
-        const infoDiv = document.getElementById('info-shareable');
         const history = Automerge.getHistory(this.doc);
-
-        infoDiv.innerHTML = `
-            <div>Characters: ${(this.doc.text || '').length}</div>
-            <div>Changes: ${history.length}</div>
-            <div>Peer: ${this.peerId.slice(0, 8)}</div>
-        `;
-
         document.getElementById('doc-version-shareable').textContent = `v${history.length}`;
     },
 
@@ -543,10 +533,9 @@ const ShareableMode = {
         this.prevText = '';
 
         // Update UI
-        document.getElementById('room-selector').classList.remove('hidden');
-        document.getElementById('editor-container-shareable').classList.add('hidden');
+        document.getElementById('current-room-name').textContent = 'Not connected';
         document.getElementById('editor-shareable').value = '';
-        document.getElementById('sync-status-shareable').textContent = 'Not connected';
+        document.getElementById('sync-status-shareable-editor').textContent = 'Not syncing';
 
         // Remove room from URL
         const url = new URL(window.location);
@@ -871,21 +860,21 @@ async function checkConnection() {
  */
 function updateConnectionStatus(connected) {
     const status = document.getElementById('connection-status');
-    const statusShareable = document.getElementById('connection-status-shareable');
+    const statusShareableEditor = document.getElementById('connection-status-shareable-editor');
     isConnected = connected;
     if (connected) {
         status.textContent = 'Connected';
         status.className = 'status-connected';
-        if (statusShareable) {
-            statusShareable.textContent = 'Connected';
-            statusShareable.className = 'status-connected';
+        if (statusShareableEditor) {
+            statusShareableEditor.textContent = 'Connected';
+            statusShareableEditor.className = 'status-connected';
         }
     } else {
         status.textContent = 'Disconnected';
         status.className = 'status-disconnected';
-        if (statusShareable) {
-            statusShareable.textContent = 'Disconnected';
-            statusShareable.className = 'status-disconnected';
+        if (statusShareableEditor) {
+            statusShareableEditor.textContent = 'Disconnected';
+            statusShareableEditor.className = 'status-disconnected';
         }
         if (isSyncing) {
             stopSync();
