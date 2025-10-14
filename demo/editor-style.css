@@ -366,7 +366,8 @@ textarea:focus {
 
 /* Shareable mode layout */
 #shareable-mode {
-    display: flex;
+    display: grid;
+    grid-template-columns: 300px 1fr 300px;
     gap: 0;
     height: calc(100vh - 200px);
     background: white;
@@ -378,9 +379,9 @@ textarea:focus {
     display: none;
 }
 
-/* Room sidebar */
+/* Room sidebar (left) */
 .room-sidebar {
-    width: 300px;
+    width: 100%;
     background: #f9fafb;
     border-right: 2px solid #e5e7eb;
     display: flex;
@@ -638,4 +639,102 @@ textarea:focus {
 
 .log-shareable {
     color: #a78bfa;
+}
+
+/* History sidebar (right) */
+.history-sidebar {
+    width: 100%;
+    background: #f9fafb;
+    border-left: 2px solid #e5e7eb;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.history-sidebar h3 {
+    padding: 20px;
+    margin: 0;
+    background: #667eea;
+    color: white;
+    font-size: 1.1em;
+}
+
+.history-container {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.history-list:empty::before {
+    content: "No history available";
+    text-align: center;
+    color: #999;
+    padding: 20px;
+    display: block;
+}
+
+.history-item {
+    padding: 12px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: 'Courier New', monospace;
+    transition: all 0.2s;
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.history-item:hover {
+    background: #eff6ff;
+    border-color: #667eea;
+    transform: translateX(-2px);
+    box-shadow: 2px 0 6px rgba(102, 126, 234, 0.1);
+}
+
+.history-item-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+
+.history-item-index {
+    font-weight: bold;
+    color: #667eea;
+    font-size: 11px;
+}
+
+.history-item-time {
+    color: #999;
+    font-size: 10px;
+}
+
+.history-item-actor {
+    color: #666;
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.history-item-message {
+    color: #333;
+    font-size: 11px;
+    line-height: 1.4;
+    word-break: break-word;
 }

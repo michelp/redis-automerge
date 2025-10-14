@@ -494,8 +494,342 @@ const ShareableMode = {
         url.searchParams.set('room', roomName);
         window.history.pushState({}, '', url);
 
+        // Load and display history
+        await this.loadHistory(docKey);
+
         // Trigger immediate room list refresh to update user count
         await this.triggerRoomListRefresh();
+    },
+
+    /**
+     * Load change history from AM.CHANGES and display in sidebar
+     * @param {string} docKey - The document key
+     */
+    async loadHistory(docKey) {
+        try {
+            // Fetch all changes using AM.CHANGES with .raw endpoint
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.CHANGES/${docKey}.raw`);
+
+            if (!response.ok) {
+                EditorCore.log('Failed to load history', 'error');
+                return;
+            }
+
+            // Get raw binary data as ArrayBuffer
+            const arrayBuffer = await response.arrayBuffer();
+            const data = new Uint8Array(arrayBuffer);
+
+            // Parse Redis protocol array response
+            // Format: *N\r\n$len1\r\n<data1>\r\n$len2\r\n<data2>\r\n...
+            const changes = this.parseRedisArray(data);
+
+            if (changes.length === 0) {
+                document.getElementById('history-list').innerHTML =
+                    '<div style="padding: 20px; text-align: center; color: #999;">No history yet</div>';
+                return;
+            }
+
+            // Apply changes to a temporary document to get history with context
+            let tempDoc = Automerge.init();
+            const historyItems = [];
+            let prevText = '';
+
+            for (const changeBytes of changes) {
+                try {
+                    const [newDoc] = Automerge.applyChanges(tempDoc, [changeBytes]);
+                    const newText = newDoc.text ? newDoc.text.toString() : '';
+
+                    // Calculate what changed
+                    const changeDetails = this.calculateChangeDetails(prevText, newText);
+
+                    tempDoc = newDoc;
+                    prevText = newText;
+
+                    // Get the latest history item
+                    const history = Automerge.getHistory(tempDoc);
+                    const item = history[history.length - 1];
+
+                    historyItems.push({
+                        index: history.length,
+                        timestamp: item.change.time || Date.now(),
+                        actor: item.change.actor || 'unknown',
+                        message: item.change.message || 'Document change',
+                        changeDetails: changeDetails
+                    });
+                } catch (error) {
+                    console.error('Error processing change:', error);
+                }
+            }
+
+            // Display history (newest first - reverse the array)
+            this.displayHistory(historyItems.reverse());
+
+            EditorCore.log(`Loaded ${changes.length} changes from history`, 'shareable');
+        } catch (error) {
+            EditorCore.log(`Error loading history: ${error.message}`, 'error');
+            console.error('Load history error:', error);
+        }
+    },
+
+    /**
+     * Calculate detailed change information from text diff
+     * @param {string} oldText - Previous text
+     * @param {string} newText - New text
+     * @returns {Object} Change details with type and description
+     */
+    calculateChangeDetails(oldText, newText) {
+        if (oldText === '' && newText !== '') {
+            // Initial content
+            const preview = newText.length > 50 ? newText.substring(0, 50) + '...' : newText;
+            return {
+                type: 'insert',
+                description: `Added initial content: "${preview}"`,
+                added: newText.length,
+                removed: 0
+            };
+        }
+
+        if (oldText === newText) {
+            return {
+                type: 'none',
+                description: 'No text change',
+                added: 0,
+                removed: 0
+            };
+        }
+
+        // Calculate the splice operation
+        const splice = EditorCore.calculateSplice(oldText, newText);
+        if (!splice) {
+            return {
+                type: 'none',
+                description: 'No text change',
+                added: 0,
+                removed: 0
+            };
+        }
+
+        const deletedText = oldText.substring(splice.pos, splice.pos + splice.del);
+        const insertedText = splice.text;
+
+        if (splice.del > 0 && insertedText.length > 0) {
+            // Replacement
+            const delPreview = deletedText.length > 30 ? deletedText.substring(0, 30) + '...' : deletedText;
+            const insPreview = insertedText.length > 30 ? insertedText.substring(0, 30) + '...' : insertedText;
+            return {
+                type: 'replace',
+                description: `Replaced "${delPreview}" with "${insPreview}"`,
+                added: insertedText.length,
+                removed: deletedText.length,
+                position: splice.pos
+            };
+        } else if (splice.del > 0) {
+            // Deletion only
+            const preview = deletedText.length > 50 ? deletedText.substring(0, 50) + '...' : deletedText;
+            return {
+                type: 'delete',
+                description: `Deleted "${preview}"`,
+                added: 0,
+                removed: deletedText.length,
+                position: splice.pos
+            };
+        } else {
+            // Insertion only
+            const preview = insertedText.length > 50 ? insertedText.substring(0, 50) + '...' : insertedText;
+            return {
+                type: 'insert',
+                description: `Inserted "${preview}"`,
+                added: insertedText.length,
+                removed: 0,
+                position: splice.pos
+            };
+        }
+    },
+
+    /**
+     * Parse Redis protocol array response
+     * @param {Uint8Array} data - Raw response data
+     * @returns {Array<Uint8Array>} Array of change byte arrays
+     */
+    parseRedisArray(data) {
+        const decoder = new TextDecoder('utf-8');
+        const changes = [];
+        let pos = 0;
+
+        // Check if it's an array response: *N\r\n
+        if (data[pos] !== 0x2a) { // '*'
+            return changes;
+        }
+
+        // Find first \r\n to get array count
+        let lineEnd = pos;
+        while (lineEnd < data.length - 1) {
+            if (data[lineEnd] === 0x0d && data[lineEnd + 1] === 0x0a) {
+                break;
+            }
+            lineEnd++;
+        }
+
+        const countStr = decoder.decode(data.slice(pos + 1, lineEnd));
+        const count = parseInt(countStr, 10);
+        pos = lineEnd + 2; // Skip \r\n
+
+        // Parse each bulk string: $len\r\n<data>\r\n
+        for (let i = 0; i < count; i++) {
+            if (data[pos] !== 0x24) { // '$'
+                break;
+            }
+
+            // Find \r\n to get length
+            lineEnd = pos;
+            while (lineEnd < data.length - 1) {
+                if (data[lineEnd] === 0x0d && data[lineEnd + 1] === 0x0a) {
+                    break;
+                }
+                lineEnd++;
+            }
+
+            const lenStr = decoder.decode(data.slice(pos + 1, lineEnd));
+            const len = parseInt(lenStr, 10);
+            pos = lineEnd + 2; // Skip \r\n
+
+            // Extract data
+            const changeBytes = data.slice(pos, pos + len);
+            changes.push(changeBytes);
+            pos += len + 2; // Skip data and \r\n
+        }
+
+        return changes;
+    },
+
+    /**
+     * Display history items in the sidebar
+     * @param {Array} historyItems - Array of history item objects
+     */
+    displayHistory(historyItems) {
+        const listDiv = document.getElementById('history-list');
+
+        if (historyItems.length === 0) {
+            listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No history yet</div>';
+            return;
+        }
+
+        listDiv.innerHTML = historyItems.map(item => {
+            const time = new Date(item.timestamp).toLocaleTimeString();
+            const actorShort = item.actor.toString().slice(0, 8);
+
+            // Format change details
+            let changeHtml = '';
+            if (item.changeDetails) {
+                const details = item.changeDetails;
+                const typeIcon = {
+                    'insert': '✚',
+                    'delete': '✖',
+                    'replace': '↻',
+                    'none': '○'
+                }[details.type] || '•';
+
+                const typeColor = {
+                    'insert': '#10b981',
+                    'delete': '#ef4444',
+                    'replace': '#f59e0b',
+                    'none': '#9ca3af'
+                }[details.type] || '#666';
+
+                changeHtml = `
+                    <div class="history-item-change" style="margin-top: 6px; padding: 6px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
+                        <div style="color: ${typeColor}; font-weight: bold; margin-bottom: 3px;">
+                            ${typeIcon} ${details.type.toUpperCase()}
+                        </div>
+                        <div style="color: #666; word-break: break-word;">
+                            ${details.description}
+                        </div>
+                        ${details.added > 0 || details.removed > 0 ? `
+                            <div style="margin-top: 3px; font-size: 10px; color: #999;">
+                                ${details.added > 0 ? `<span style="color: #10b981;">+${details.added}</span>` : ''}
+                                ${details.removed > 0 ? `<span style="color: #ef4444;"> -${details.removed}</span>` : ''}
+                            </div>
+                        ` : ''}
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="history-item">
+                    <div class="history-item-header">
+                        <span class="history-item-index">#${item.index}</span>
+                        <span class="history-item-time">${time}</span>
+                    </div>
+                    <div class="history-item-actor">Actor: ${actorShort}</div>
+                    ${changeHtml}
+                </div>
+            `;
+        }).join('');
+    },
+
+    /**
+     * Prepend a new history item to the top of the list
+     * @param {Object} item - History item object
+     */
+    prependHistoryItem(item) {
+        const listDiv = document.getElementById('history-list');
+
+        // Remove "no history" message if present
+        if (listDiv.innerHTML.includes('No history yet')) {
+            listDiv.innerHTML = '';
+        }
+
+        const time = new Date(item.timestamp).toLocaleTimeString();
+        const actorShort = item.actor.toString().slice(0, 8);
+
+        // Format change details
+        let changeHtml = '';
+        if (item.changeDetails) {
+            const details = item.changeDetails;
+            const typeIcon = {
+                'insert': '✚',
+                'delete': '✖',
+                'replace': '↻',
+                'none': '○'
+            }[details.type] || '•';
+
+            const typeColor = {
+                'insert': '#10b981',
+                'delete': '#ef4444',
+                'replace': '#f59e0b',
+                'none': '#9ca3af'
+            }[details.type] || '#666';
+
+            changeHtml = `
+                <div class="history-item-change" style="margin-top: 6px; padding: 6px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
+                    <div style="color: ${typeColor}; font-weight: bold; margin-bottom: 3px;">
+                        ${typeIcon} ${details.type.toUpperCase()}
+                    </div>
+                    <div style="color: #666; word-break: break-word;">
+                        ${details.description}
+                    </div>
+                    ${details.added > 0 || details.removed > 0 ? `
+                        <div style="margin-top: 3px; font-size: 10px; color: #999;">
+                            ${details.added > 0 ? `<span style="color: #10b981;">+${details.added}</span>` : ''}
+                            ${details.removed > 0 ? `<span style="color: #ef4444;"> -${details.removed}</span>` : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        const itemHtml = `
+            <div class="history-item">
+                <div class="history-item-header">
+                    <span class="history-item-index">#${item.index}</span>
+                    <span class="history-item-time">${time}</span>
+                </div>
+                <div class="history-item-actor">Actor: ${actorShort}</div>
+                ${changeHtml}
+            </div>
+        `;
+
+        listDiv.insertAdjacentHTML('afterbegin', itemHtml);
     },
 
     /**
@@ -526,12 +860,38 @@ const ShareableMode = {
      */
     handleIncomingMessage(messageData) {
         try {
+            // Get old text before applying change
+            const oldText = this.doc.text ? this.doc.text.toString() : '';
+
             const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
             const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
+
+            // Get new text after applying change
+            const newText = newDoc.text ? newDoc.text.toString() : '';
+
             this.doc = newDoc;
 
             this.updateEditor();
             this.updateDocInfo();
+
+            // Only update history if the text actually changed
+            // (Skip if this is our own change being echoed back)
+            if (oldText !== newText) {
+                // Calculate what changed
+                const changeDetails = this.calculateChangeDetails(oldText, newText);
+
+                // Update history sidebar with new change
+                const history = Automerge.getHistory(this.doc);
+                const latestChange = history[history.length - 1];
+
+                this.prependHistoryItem({
+                    index: history.length,
+                    timestamp: latestChange.change.time || Date.now(),
+                    actor: latestChange.change.actor || 'unknown',
+                    message: latestChange.change.message || 'Document change',
+                    changeDetails: changeDetails
+                });
+            }
         } catch (error) {
             console.error('[ShareableMode] Error applying change:', error);
             EditorCore.log(`Error handling message: ${error.message}`, 'error');
@@ -557,13 +917,17 @@ const ShareableMode = {
         const docKey = `am:room:${this.currentRoom}`;
         const textarea = document.getElementById('editor-shareable');
         const newText = textarea.value;
+        const oldText = this.prevText;
 
         // Calculate the minimal splice operation
-        const splice = EditorCore.calculateSplice(this.prevText, newText);
+        const splice = EditorCore.calculateSplice(oldText, newText);
 
         if (!splice) {
             return;
         }
+
+        // Calculate change details for history
+        const changeDetails = this.calculateChangeDetails(oldText, newText);
 
         // Update local document
         this.doc = Automerge.change(this.doc, d => {
@@ -576,6 +940,18 @@ const ShareableMode = {
         // Apply to server
         await EditorCore.applySpliceToServer(docKey, splice);
         this.updateDocInfo();
+
+        // Add to history immediately for local user
+        const history = Automerge.getHistory(this.doc);
+        const latestChange = history[history.length - 1];
+
+        this.prependHistoryItem({
+            index: history.length,
+            timestamp: latestChange.change.time || Date.now(),
+            actor: latestChange.change.actor || 'unknown',
+            message: latestChange.change.message || 'Document change',
+            changeDetails: changeDetails
+        });
     },
 
     /**

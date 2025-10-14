@@ -14,6 +14,7 @@
 //! - `AM.LOAD <key> <bytes>` - Load a document from binary format
 //! - `AM.SAVE <key>` - Save a document to binary format
 //! - `AM.APPLY <key> <change>...` - Apply Automerge changes to a document
+//! - `AM.CHANGES <key> [<hash>...]` - Get changes not in the provided hash list (empty = all changes)
 //!
 //! ## Value Operations
 //! - `AM.PUTTEXT <key> <path> <value>` - Set a text value
@@ -73,7 +74,7 @@ pub mod ext;
 
 use std::os::raw::{c_int, c_void};
 
-use automerge::Change;
+use automerge::{Change, ChangeHash};
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
 #[cfg(not(test))]
 use redis_module::redis_module;
@@ -656,6 +657,37 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
+fn am_changes(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() < 2 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    // Parse have_deps from remaining arguments
+    let mut have_deps = Vec::new();
+    for hash_arg in &args[2..] {
+        let bytes = hash_arg.as_slice();
+        let hash = ChangeHash::try_from(bytes)
+            .map_err(|e| RedisError::String(format!("invalid change hash: {:?}", e)))?;
+        have_deps.push(hash);
+    }
+
+    // Get changes
+    let changes = client.get_changes(&have_deps);
+
+    // Build array response
+    let mut result = Vec::new();
+    for change in changes {
+        result.push(RedisValue::StringBuffer(change.raw_bytes().to_vec()));
+    }
+
+    Ok(RedisValue::Array(result))
+}
+
 /// # Safety
 /// This function is called by Redis when freeing a RedisAutomergeClient value.
 /// The caller (Redis) must ensure that `value` is a valid pointer to a
@@ -699,6 +731,7 @@ redis_module! {
         ["am.load", am_load, "write", 1, 1, 1],
         ["am.save", am_save, "readonly", 1, 1, 1],
         ["am.apply", am_apply, "write deny-oom", 1, 1, 1],
+        ["am.changes", am_changes, "readonly", 1, 1, 1],
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
         ["am.putdiff", am_putdiff, "write deny-oom", 1, 1, 1],
@@ -1343,5 +1376,42 @@ mod tests {
             loaded.get_text("doc").unwrap(),
             Some("Hello Rust".to_string())
         );
+    }
+
+    #[test]
+    fn get_changes_empty_deps() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Make some changes
+        client.put_text("field1", "value1").unwrap();
+        client.put_text("field2", "value2").unwrap();
+
+        // Get all changes (empty have_deps)
+        let changes = client.get_changes(&[]);
+
+        // Should return 2 changes
+        assert_eq!(changes.len(), 2);
+    }
+
+    #[test]
+    fn get_changes_with_deps() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Make first change
+        client.put_text("field1", "value1").unwrap();
+
+        // Get the hash of the first change
+        let changes1 = client.get_changes(&[]);
+        assert_eq!(changes1.len(), 1);
+        let hash1 = changes1[0].hash();
+
+        // Make second change
+        client.put_text("field2", "value2").unwrap();
+
+        // Get changes we don't have (passing first hash as dependency)
+        let changes = client.get_changes(&[hash1]);
+
+        // Should return only the second change
+        assert_eq!(changes.len(), 1);
     }
 }
