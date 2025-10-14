@@ -602,8 +602,10 @@ const ShareableMode = {
 
                     let activeUsers = 0;
                     // PUBSUB NUMSUB returns array: [channel_name, subscriber_count, ...]
-                    if (numsubData['PUBSUB NUMSUB'] && Array.isArray(numsubData['PUBSUB NUMSUB'])) {
-                        activeUsers = numsubData['PUBSUB NUMSUB'][1] || 0;
+                    // Webdis returns it as 'PUBSUB' not 'PUBSUB NUMSUB'
+                    const pubsubData = numsubData['PUBSUB NUMSUB'] || numsubData['PUBSUB'];
+                    if (pubsubData && Array.isArray(pubsubData)) {
+                        activeUsers = pubsubData[1] || 0;
                     }
 
                     console.log(`Room ${roomName}: channel=${channel}, activeUsers=${activeUsers}`, numsubData);
