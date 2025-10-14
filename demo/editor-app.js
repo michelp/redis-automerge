@@ -2,8 +2,8 @@
 // EditorCore - Shared primitives used by both modes
 // ============================================================================
 const EditorCore = {
-    WEBDIS_URL: 'http://localhost:7379',
-    WEBDIS_WS_URL: 'ws://localhost:7379',
+    WEBDIS_URL: `${window.location.protocol}//${window.location.host}/api`,
+    WEBDIS_WS_URL: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api`,
 
     /**
      * Generate a unique peer ID for this editor instance.
@@ -245,6 +245,7 @@ const ShareableMode = {
     _refreshDebounce: null,
     refreshInterval: null,
     heartbeatInterval: null,
+    isLocallyEditing: false, // Track if we're actively making changes
 
     /**
      * Initialize shareable mode
@@ -479,6 +480,12 @@ const ShareableMode = {
         editor.removeEventListener('input', this._currentHandler);
         this._currentHandler = newHandler;
         editor.addEventListener('input', newHandler);
+
+        // Update editor when it loses focus (to sync any pending changes)
+        editor.addEventListener('blur', () => {
+            EditorCore.log('Editor lost focus - syncing any pending changes', 'shareable');
+            this.updateEditor();
+        });
 
         // Update the editor with loaded content
         const textarea = document.getElementById('editor-shareable');
@@ -832,27 +839,6 @@ const ShareableMode = {
         listDiv.insertAdjacentHTML('afterbegin', itemHtml);
     },
 
-    /**
-     * Fetch current text from server and update local doc
-     * @param {string} docKey - The document key
-     */
-    async fetchServerText(docKey) {
-        try {
-            const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.GETTEXT/${docKey}/text`);
-            const data = await response.json();
-
-            if (data && data['AM.GETTEXT']) {
-                const serverText = data['AM.GETTEXT'];
-                this.doc = Automerge.change(this.doc, doc => {
-                    doc.text = serverText;
-                });
-                this.updateEditor();
-                this.updateDocInfo();
-            }
-        } catch (error) {
-            EditorCore.log(`Error fetching server text: ${error.message}`, 'error');
-        }
-    },
 
     /**
      * Handle incoming change messages from Redis pub/sub
@@ -900,12 +886,14 @@ const ShareableMode = {
 
     /**
      * Handle keyspace notification events
+     * Note: All changes are already handled via the changes: pub/sub channel
+     * This is kept for potential future use (e.g., detecting external deletions)
      * @param {string} docKey - The document key
      * @param {string} command - The Redis command that triggered the notification
      */
     async handleKeyspaceNotification(docKey, command) {
         EditorCore.log(`Keyspace notification: ${command} on ${docKey}`, 'shareable');
-        await this.fetchServerText(docKey);
+        // No action needed - all changes come via pub/sub channel
     },
 
     /**
@@ -926,32 +914,22 @@ const ShareableMode = {
             return;
         }
 
-        // Calculate change details for history
-        const changeDetails = this.calculateChangeDetails(oldText, newText);
-
-        // Update local document
-        this.doc = Automerge.change(this.doc, d => {
-            d.text = newText;
-        });
-        this.prevText = newText;
+        // Mark that we're actively editing
+        this.isLocallyEditing = true;
 
         EditorCore.log(`Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, 'shareable');
 
-        // Apply to server
+        // Apply to server - server will create Automerge change and broadcast it
         await EditorCore.applySpliceToServer(docKey, splice);
-        this.updateDocInfo();
 
-        // Add to history immediately for local user
-        const history = Automerge.getHistory(this.doc);
-        const latestChange = history[history.length - 1];
+        // Only update prevText AFTER we've sent to server
+        // This ensures we track what we actually sent
+        this.prevText = newText;
 
-        this.prependHistoryItem({
-            index: history.length,
-            timestamp: latestChange.change.time || Date.now(),
-            actor: latestChange.change.actor || 'unknown',
-            message: latestChange.change.message || 'Document change',
-            changeDetails: changeDetails
-        });
+        // Clear editing flag after a short delay (to handle echo-back)
+        setTimeout(() => {
+            this.isLocallyEditing = false;
+        }, 100);
     },
 
     /**
@@ -959,30 +937,42 @@ const ShareableMode = {
      */
     updateEditor() {
         const textarea = document.getElementById('editor-shareable');
-        const oldText = textarea.value;
+
+        // Only skip if we're actively making local edits
+        // Always apply changes from other editors
+        if (this.isLocallyEditing && document.activeElement === textarea) {
+            EditorCore.log(`Skipping update - locally editing`, 'shareable');
+            return;
+        }
+
+        const currentText = textarea.value;
         // Convert Automerge Text object to plain string
         const newText = this.doc.text ? this.doc.text.toString() : '';
         const cursorPos = textarea.selectionStart;
 
-        if (newText !== oldText) {
-            const splice = EditorCore.calculateSplice(oldText, newText);
+        if (newText !== currentText) {
+            const splice = EditorCore.calculateSplice(currentText, newText);
             textarea.value = newText;
 
             if (splice) {
                 let newCursorPos = cursorPos;
-                if (cursorPos >= splice.pos) {
-                    const netChange = splice.text.length - splice.del;
-                    if (cursorPos <= splice.pos + splice.del) {
-                        newCursorPos = splice.pos + splice.text.length;
-                    } else {
-                        newCursorPos = cursorPos + netChange;
+                // Only adjust cursor if textarea is focused
+                if (document.activeElement === textarea) {
+                    if (cursorPos >= splice.pos) {
+                        const netChange = splice.text.length - splice.del;
+                        if (cursorPos <= splice.pos + splice.del) {
+                            newCursorPos = splice.pos + splice.text.length;
+                        } else {
+                            newCursorPos = cursorPos + netChange;
+                        }
                     }
+                    newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
+                    textarea.setSelectionRange(newCursorPos, newCursorPos);
                 }
-                newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
-                textarea.setSelectionRange(newCursorPos, newCursorPos);
             }
 
             this.prevText = newText;
+            EditorCore.log(`Editor updated with remote changes`, 'shareable');
         }
     },
 
@@ -1326,6 +1316,10 @@ let rightSocket = null;
 let leftPrevText = '';
 let rightPrevText = '';
 
+// Track if we're actively editing
+let leftIsEditing = false;
+let rightIsEditing = false;
+
 /**
  * Generate a unique peer ID for this editor instance.
  * Used to identify which peer made changes and to filter out our own messages.
@@ -1363,6 +1357,16 @@ window.addEventListener('load', async () => {
 
     leftEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('left'), 300));
     rightEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('right'), 300));
+
+    // Update editors when they lose focus (to sync any pending changes)
+    leftEditor.addEventListener('blur', () => {
+        log('[left] Editor lost focus - syncing any pending changes', 'left');
+        updateEditor('left');
+    });
+    rightEditor.addEventListener('blur', () => {
+        log('[right] Editor lost focus - syncing any pending changes', 'right');
+        updateEditor('right');
+    });
 
     // Check connection periodically
     setInterval(checkConnection, 5000);
@@ -1699,48 +1703,15 @@ function setupWebSocket(editor, docKey) {
 
 /**
  * Handle keyspace notification events from Redis.
- * Called when an external client modifies the document.
+ * Note: All changes are already handled via the changes: pub/sub channel
+ * This is kept for potential future use (e.g., detecting external deletions)
  * @param {string} editor - Which editor ('left' or 'right')
  * @param {string} docKey - The document key
  * @param {string} command - The Redis command that triggered the notification (e.g., "am.splicetext")
  */
 async function handleKeyspaceNotification(editor, docKey, command) {
-    try {
-        // Fetch the current text from the server
-        const response = await fetch(`${WEBDIS_URL}/AM.GETTEXT/${docKey}/text`);
-        const data = await response.json();
-
-        if (data && data['AM.GETTEXT']) {
-            const serverText = data['AM.GETTEXT'];
-
-            // Get current document
-            const currentDoc = editor === 'left' ? leftDoc : rightDoc;
-
-            // Only update if the server text is different from local
-            if (currentDoc && currentDoc.text !== serverText) {
-                log(`[${editor}] External change detected, updating from server`, editor);
-
-                // Update the local document
-                const newDoc = Automerge.change(currentDoc, doc => {
-                    doc.text = serverText;
-                });
-
-                // Update the document reference
-                if (editor === 'left') {
-                    leftDoc = newDoc;
-                } else {
-                    rightDoc = newDoc;
-                }
-
-                // Update the editor UI (will also update prevText)
-                updateEditor(editor);
-                updateDocInfo(editor);
-            }
-        }
-    } catch (error) {
-        log(`[${editor}] Error handling keyspace notification: ${error.message}`, 'error');
-        console.error('Keyspace notification error:', error);
-    }
+    log(`[${editor}] Keyspace notification: ${command} on ${docKey}`, editor);
+    // No action needed - all changes come via pub/sub channel
 }
 
 /**
@@ -1822,21 +1793,11 @@ async function handleEdit(editor) {
         return;
     }
 
-    // Get current document
-    const oldDoc = editor === 'left' ? leftDoc : rightDoc;
-
-    // Create new document with changes
-    const newDoc = Automerge.change(oldDoc, d => {
-        d.text = newText;
-    });
-
-    // Update the document reference
+    // Mark that we're actively editing
     if (editor === 'left') {
-        leftDoc = newDoc;
-        leftPrevText = newText;
+        leftIsEditing = true;
     } else {
-        rightDoc = newDoc;
-        rightPrevText = newText;
+        rightIsEditing = true;
     }
 
     log(`[${editor}] Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, editor);
@@ -1845,7 +1806,22 @@ async function handleEdit(editor) {
     // Server will automatically publish changes to the changes:{key} channel
     await applySpliceToServer(docKey, splice);
 
-    updateDocInfo(editor);
+    // Only update prevText AFTER we've sent to server
+    // This ensures we track what we actually sent
+    if (editor === 'left') {
+        leftPrevText = newText;
+    } else {
+        rightPrevText = newText;
+    }
+
+    // Clear editing flag after a short delay (to handle echo-back)
+    setTimeout(() => {
+        if (editor === 'left') {
+            leftIsEditing = false;
+        } else {
+            rightIsEditing = false;
+        }
+    }, 100);
 }
 
 /**
@@ -1965,16 +1941,25 @@ function updateEditor(editor) {
     if (!doc) return;
 
     const textarea = document.getElementById(`editor-${editor}`);
-    const oldText = textarea.value;
+    const isEditing = editor === 'left' ? leftIsEditing : rightIsEditing;
+
+    // Only skip if we're actively making local edits
+    // Always apply changes from other editors
+    if (isEditing && document.activeElement === textarea) {
+        log(`[${editor}] Skipping update - locally editing`, editor);
+        return;
+    }
+
+    const currentText = textarea.value;
     // Convert Automerge Text object to plain string
     const newText = doc.text ? doc.text.toString() : '';
     const cursorPos = textarea.selectionStart;
     const cursorEnd = textarea.selectionEnd;
 
     // Only update if text differs
-    if (newText !== oldText) {
+    if (newText !== currentText) {
         // Calculate the splice to determine cursor adjustment
-        const splice = EditorCore.calculateSplice(oldText, newText);
+        const splice = EditorCore.calculateSplice(currentText, newText);
 
         textarea.value = newText;
 
@@ -1983,8 +1968,8 @@ function updateEditor(editor) {
             let newCursorPos = cursorPos;
             let newCursorEnd = cursorEnd;
 
-            // If cursor is after the change position, adjust it
-            if (cursorPos >= splice.pos) {
+            // Only adjust cursor if textarea is focused
+            if (document.activeElement === textarea && cursorPos >= splice.pos) {
                 // Calculate net change in text length
                 const netChange = splice.text.length - splice.del;
 
@@ -2008,7 +1993,10 @@ function updateEditor(editor) {
             newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
             newCursorEnd = Math.max(0, Math.min(newCursorEnd, newText.length));
 
-            textarea.setSelectionRange(newCursorPos, newCursorEnd);
+            // Only set selection if textarea is focused
+            if (document.activeElement === textarea) {
+                textarea.setSelectionRange(newCursorPos, newCursorEnd);
+            }
         } else {
             // No splice calculated, try to preserve original position
             const safePos = Math.min(cursorPos, newText.length);
