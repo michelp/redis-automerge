@@ -594,14 +594,19 @@ const ShareableMode = {
             // Get active user counts
             const roomsWithUsers = await Promise.all(
                 rooms.map(async (roomName) => {
-                    const channel = `changes:am:room:${roomName}`;
+                    // Channel format: changes:am:room:{roomName}
+                    const docKey = `am:room:${roomName}`;
+                    const channel = `changes:${docKey}`;
                     const numsubResponse = await fetch(`${EditorCore.WEBDIS_URL}/PUBSUB/NUMSUB/${channel}`);
                     const numsubData = await numsubResponse.json();
 
                     let activeUsers = 0;
+                    // PUBSUB NUMSUB returns array: [channel_name, subscriber_count, ...]
                     if (numsubData['PUBSUB NUMSUB'] && Array.isArray(numsubData['PUBSUB NUMSUB'])) {
                         activeUsers = numsubData['PUBSUB NUMSUB'][1] || 0;
                     }
+
+                    console.log(`Room ${roomName}: channel=${channel}, activeUsers=${activeUsers}`, numsubData);
 
                     return { roomName, activeUsers };
                 })
