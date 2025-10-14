@@ -129,23 +129,15 @@ const EditorCore = {
      */
     async applySpliceToServer(docKey, splice) {
         try {
-            console.log('[EditorCore] === SPLICE TO SERVER DIAGNOSTIC ===');
-            console.log('[EditorCore] Splice:', splice);
-
             let response;
             if (splice.text === '') {
                 // Webdis doesn't send empty PUT body as an argument to Redis
                 // Use GET with trailing slash for empty string (deletions)
                 const url = `${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}/`;
-                console.log('[EditorCore] Deletion - using GET with trailing slash');
-                console.log('[EditorCore] URL:', url);
                 response = await fetch(url);
             } else {
                 // For insertions/replacements, use PUT with text in body
                 const url = `${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`;
-                console.log('[EditorCore] Insertion - using PUT');
-                console.log('[EditorCore] URL:', url);
-                console.log('[EditorCore] Body:', splice.text.substring(0, 50));
                 response = await fetch(url, {
                     method: 'PUT',
                     headers: {
@@ -156,18 +148,14 @@ const EditorCore = {
             }
 
             const data = await response.json();
-            console.log('[EditorCore] Server response:', data);
 
             if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
-                console.log('[EditorCore] Splice successful');
                 return true;
             } else {
-                console.error('[EditorCore] Splice failed:', data);
                 this.log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
                 return false;
             }
         } catch (error) {
-            console.error('[EditorCore] Splice exception:', error);
             this.log(`Error applying splice to server: ${error.message}`, 'error');
             console.error('Server splice error:', error);
             return false;
@@ -252,6 +240,7 @@ const ShareableMode = {
     currentRoom: null,
     roomList: [],
     roomPeers: {}, // Track peers by room: { roomName: Set of peerIds }
+    roomActivity: {}, // Track last activity timestamp by room: { roomName: timestamp }
     _currentHandler: null,
     _refreshDebounce: null,
     refreshInterval: null,
@@ -413,16 +402,12 @@ const ShareableMode = {
         // Load the document from Redis to ensure all clients share the same document history
         // Use .raw endpoint because Webdis .json endpoint can't handle binary data
         try {
-            console.log('[ShareableMode] === DIAGNOSTIC: Loading document from server ===');
             const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.SAVE/${docKey}.raw`);
-            console.log('[ShareableMode] Layer 1 - Response status:', response.status, response.statusText);
 
             if (response.ok) {
                 // Get raw binary data as ArrayBuffer
                 const arrayBuffer = await response.arrayBuffer();
                 const docBytes = new Uint8Array(arrayBuffer);
-                console.log('[ShareableMode] Layer 2 - Loaded bytes length:', docBytes.length);
-                console.log('[ShareableMode] Layer 2 - First 20 bytes:', Array.from(docBytes.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
                 // Webdis .raw returns Redis protocol format: $NNN\r\n<data>\r\n
                 // Parse the bulk string header to get exact byte count
@@ -440,26 +425,18 @@ const ShareableMode = {
                 const byteCount = parseInt(headerText, 10);
                 const dataStart = headerEnd + 2; // Skip past \r\n
 
-                console.log('[ShareableMode] Layer 2.5 - Redis protocol: byte count =', byteCount, ', data starts at:', dataStart);
-
                 // Extract exactly byteCount bytes (ignore trailing \r\n)
                 const actualDocBytes = docBytes.slice(dataStart, dataStart + byteCount);
-                console.log('[ShareableMode] Layer 2.5 - Extracted doc bytes length:', actualDocBytes.length);
-                console.log('[ShareableMode] Layer 2.5 - First 20 bytes after skip:', Array.from(actualDocBytes.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
 
                 this.doc = Automerge.load(actualDocBytes);
-                console.log('[ShareableMode] Layer 3 - Loaded document:', this.doc);
-                console.log('[ShareableMode] Layer 4 - Document text property:', this.doc.text);
-                console.log('[ShareableMode] Layer 4 - Document keys:', Object.keys(this.doc));
 
                 // Convert Automerge Text object to plain string
                 const textValue = this.doc.text ? this.doc.text.toString() : '';
                 this.prevText = textValue;
-                console.log('[ShareableMode] Layer 5 - prevText set to:', this.prevText);
-                EditorCore.log(`Loaded document from server (${docBytes.length} bytes)`, 'shareable');
+                EditorCore.log(`Loaded document from server (${actualDocBytes.length} bytes)`, 'shareable');
             } else {
-                console.error('[ShareableMode] AM.SAVE request failed:', response.status);
-                EditorCore.log('Failed to load document from server, creating new local document', 'error');
+                console.error('[ShareableMode] Failed to load document, status:', response.status);
+                EditorCore.log('Failed to load document from server', 'error');
                 const baseDoc = Automerge.init();
                 this.doc = Automerge.change(baseDoc, doc => {
                     doc.text = '';
@@ -507,11 +484,8 @@ const ShareableMode = {
         const textarea = document.getElementById('editor-shareable');
         // Convert Automerge Text object to plain string
         const textToDisplay = this.doc.text ? this.doc.text.toString() : '';
-        console.log('[ShareableMode] Layer 6 - Setting textarea value to:', textToDisplay);
-        console.log('[ShareableMode] Layer 6 - Textarea element:', textarea);
         textarea.value = textToDisplay;
         this.prevText = textToDisplay;
-        console.log('[ShareableMode] Layer 7 - Textarea value after set:', textarea.value);
 
         EditorCore.log(`Connected to room: ${roomName}`, 'shareable');
 
@@ -552,30 +526,14 @@ const ShareableMode = {
      */
     handleIncomingMessage(messageData) {
         try {
-            console.log('[ShareableMode] === INCOMING CHANGE DIAGNOSTIC ===');
-            console.log('[ShareableMode] Received message (base64):', messageData.substring(0, 50) + '...');
             const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
-            console.log('[ShareableMode] Decoded change bytes, length:', changeBytes.length);
-            EditorCore.log('Received change from server', 'shareable');
-
-            console.log('[ShareableMode] Before apply - doc.text:', this.doc.text);
-            console.log('[ShareableMode] Before apply - doc actor:', Automerge.getActorId(this.doc));
-            console.log('[ShareableMode] Before apply - doc history length:', Automerge.getHistory(this.doc).length);
-
             const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
-
-            console.log('[ShareableMode] After apply - doc.text:', newDoc.text);
-            console.log('[ShareableMode] After apply - doc actor:', Automerge.getActorId(newDoc));
-            console.log('[ShareableMode] After apply - doc history length:', Automerge.getHistory(newDoc).length);
-            console.log('[ShareableMode] Text changed?', this.doc.text !== newDoc.text);
-
             this.doc = newDoc;
 
             this.updateEditor();
             this.updateDocInfo();
         } catch (error) {
-            console.error('[ShareableMode] Error handling message:', error);
-            console.error('[ShareableMode] Stack:', error.stack);
+            console.error('[ShareableMode] Error applying change:', error);
             EditorCore.log(`Error handling message: ${error.message}`, 'error');
         }
     },
@@ -607,26 +565,16 @@ const ShareableMode = {
             return;
         }
 
-        console.log('[ShareableMode] === EDIT DIAGNOSTIC ===');
-        console.log('[ShareableMode] Before local change - doc.text:', this.doc.text);
-        console.log('[ShareableMode] Before local change - actor:', Automerge.getActorId(this.doc));
-        console.log('[ShareableMode] Splice operation:', splice);
-
         // Update local document
         this.doc = Automerge.change(this.doc, d => {
             d.text = newText;
         });
         this.prevText = newText;
 
-        console.log('[ShareableMode] After local change - doc.text:', this.doc.text);
-        console.log('[ShareableMode] After local change - actor:', Automerge.getActorId(this.doc));
-
         EditorCore.log(`Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, 'shareable');
 
         // Apply to server
-        console.log('[ShareableMode] Sending splice to server...');
         await EditorCore.applySpliceToServer(docKey, splice);
-        console.log('[ShareableMode] Splice sent to server');
         this.updateDocInfo();
     },
 
@@ -788,13 +736,36 @@ const ShareableMode = {
                     // Get peer list for this room
                     const peers = await this.getPeersInRoom(roomName);
 
-                    console.log(`Room ${roomName}: channel=${channel}, activeUsers=${activeUsers}, peers=${peers.join(', ')}`, numsubData);
+                    // Track peer changes to update activity timestamp
+                    const previousPeers = this.roomPeers[roomName] || new Set();
+                    const currentPeersSet = new Set(peers);
 
-                    return { roomName, activeUsers, peers };
+                    // Check if peers changed (joined or left)
+                    const peersChanged =
+                        previousPeers.size !== currentPeersSet.size ||
+                        [...previousPeers].some(p => !currentPeersSet.has(p));
+
+                    if (peersChanged) {
+                        this.roomActivity[roomName] = Date.now();
+                        this.roomPeers[roomName] = currentPeersSet;
+                    }
+
+                    // Ensure room has an activity timestamp (default to 0 for new rooms)
+                    if (!this.roomActivity[roomName]) {
+                        this.roomActivity[roomName] = 0;
+                    }
+
+                    return {
+                        roomName,
+                        activeUsers,
+                        peers,
+                        lastActivity: this.roomActivity[roomName]
+                    };
                 })
             );
 
-            this.roomList = roomsWithUsers;
+            // Sort by most recent activity (newest first)
+            this.roomList = roomsWithUsers.sort((a, b) => b.lastActivity - a.lastActivity);
             this.updateRoomListUI();
 
         } catch (error) {
@@ -1277,9 +1248,7 @@ function setupWebSocket(editor, docKey) {
 
     ws.onmessage = (event) => {
         try {
-            console.log(`[${editor}] WebSocket raw message:`, event.data);
             const response = JSON.parse(event.data);
-            console.log(`[${editor}] WebSocket parsed data:`, response);
 
             if (response.SUBSCRIBE) {
                 const data = response.SUBSCRIBE;
@@ -1361,15 +1330,12 @@ function setupWebSocket(editor, docKey) {
  */
 async function handleKeyspaceNotification(editor, docKey, command) {
     try {
-        console.log(`[${editor}] Keyspace notification: ${command} on ${docKey}`);
-
         // Fetch the current text from the server
         const response = await fetch(`${WEBDIS_URL}/AM.GETTEXT/${docKey}/text`);
         const data = await response.json();
 
         if (data && data['AM.GETTEXT']) {
             const serverText = data['AM.GETTEXT'];
-            console.log(`[${editor}] Fetched server text:`, serverText);
 
             // Get current document
             const currentDoc = editor === 'left' ? leftDoc : rightDoc;
@@ -1410,23 +1376,14 @@ async function handleKeyspaceNotification(editor, docKey, command) {
  */
 function handleIncomingMessage(editor, messageData, myPeerId) {
     try {
-        console.log(`[${editor}] handleIncomingMessage called with:`, messageData);
-
         // Decode the change bytes from base64 (server publishes raw change bytes)
         const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
-        console.log(`[${editor}] Decoded change bytes, length:`, changeBytes.length);
-
-        log(`[${editor}] Received change from server`, editor);
 
         // Get current document
         const currentDoc = editor === 'left' ? leftDoc : rightDoc;
-        console.log(`[${editor}] Current doc:`, currentDoc);
 
         // Apply the change to the current document
-        console.log(`[${editor}] About to apply change. CurrentDoc actor:`, Automerge.getActorId(currentDoc));
         const [newDoc] = Automerge.applyChanges(currentDoc, [changeBytes]);
-        console.log(`[${editor}] ApplyChanges returned successfully`);
-        console.log(`[${editor}] New doc after applying change:`, newDoc);
 
         // Update the document reference
         if (editor === 'left') {
@@ -1439,10 +1396,8 @@ function handleIncomingMessage(editor, messageData, myPeerId) {
         updateEditor(editor);
         updateDocInfo(editor);
 
-        log(`[${editor}] Applied change from server`, editor);
-
     } catch (error) {
-        log(`[${editor}] Error handling message: ${error.message}`, 'error');
+        log(`[${editor}] Error applying change: ${error.message}`, 'error');
         console.error('Error handling message:', error);
     }
 }
@@ -1491,8 +1446,6 @@ async function handleEdit(editor) {
         return;
     }
 
-    console.log(`[${editor}] Splice calculated:`, splice);
-
     // Get current document
     const oldDoc = editor === 'left' ? leftDoc : rightDoc;
 
@@ -1533,12 +1486,10 @@ async function applySpliceToServer(docKey, splice) {
             // Webdis doesn't send empty PUT body as an argument to Redis
             // Use GET with trailing slash for empty string (deletions)
             const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}/`;
-            console.log('[Dual Mode] Deletion - using GET with trailing slash:', url);
             response = await fetch(url);
         } else {
             // For insertions/replacements, use PUT with text in body
             const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`;
-            console.log('[Dual Mode] Insertion - using PUT:', url);
             response = await fetch(url, {
                 method: 'PUT',
                 headers: {
@@ -1549,10 +1500,9 @@ async function applySpliceToServer(docKey, splice) {
         }
 
         const data = await response.json();
-        console.log('AM.SPLICETEXT response:', data);
 
         if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
-            // log('Server splice applied successfully', 'server');
+            // Success
         } else {
             log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
         }
