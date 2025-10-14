@@ -129,22 +129,45 @@ const EditorCore = {
      */
     async applySpliceToServer(docKey, splice) {
         try {
-            const response = await fetch(`${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'text/plain'
-                },
-                body: splice.text
-            });
+            console.log('[EditorCore] === SPLICE TO SERVER DIAGNOSTIC ===');
+            console.log('[EditorCore] Splice:', splice);
+
+            let response;
+            if (splice.text === '') {
+                // Webdis doesn't send empty PUT body as an argument to Redis
+                // Use GET with trailing slash for empty string (deletions)
+                const url = `${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}/`;
+                console.log('[EditorCore] Deletion - using GET with trailing slash');
+                console.log('[EditorCore] URL:', url);
+                response = await fetch(url);
+            } else {
+                // For insertions/replacements, use PUT with text in body
+                const url = `${this.WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`;
+                console.log('[EditorCore] Insertion - using PUT');
+                console.log('[EditorCore] URL:', url);
+                console.log('[EditorCore] Body:', splice.text.substring(0, 50));
+                response = await fetch(url, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'text/plain'
+                    },
+                    body: splice.text
+                });
+            }
+
             const data = await response.json();
+            console.log('[EditorCore] Server response:', data);
 
             if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
+                console.log('[EditorCore] Splice successful');
                 return true;
             } else {
+                console.error('[EditorCore] Splice failed:', data);
                 this.log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
                 return false;
             }
         } catch (error) {
+            console.error('[EditorCore] Splice exception:', error);
             this.log(`Error applying splice to server: ${error.message}`, 'error');
             console.error('Server splice error:', error);
             return false;
@@ -387,12 +410,71 @@ const ShareableMode = {
 
         EditorCore.log(`Joining room: ${roomName}`, 'shareable');
 
-        // Initialize local Automerge document
-        const baseDoc = Automerge.init();
-        this.doc = Automerge.change(baseDoc, doc => {
-            doc.text = '';
-        });
-        this.prevText = '';
+        // Load the document from Redis to ensure all clients share the same document history
+        // Use .raw endpoint because Webdis .json endpoint can't handle binary data
+        try {
+            console.log('[ShareableMode] === DIAGNOSTIC: Loading document from server ===');
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.SAVE/${docKey}.raw`);
+            console.log('[ShareableMode] Layer 1 - Response status:', response.status, response.statusText);
+
+            if (response.ok) {
+                // Get raw binary data as ArrayBuffer
+                const arrayBuffer = await response.arrayBuffer();
+                const docBytes = new Uint8Array(arrayBuffer);
+                console.log('[ShareableMode] Layer 2 - Loaded bytes length:', docBytes.length);
+                console.log('[ShareableMode] Layer 2 - First 20 bytes:', Array.from(docBytes.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
+                // Webdis .raw returns Redis protocol format: $NNN\r\n<data>\r\n
+                // Parse the bulk string header to get exact byte count
+                const decoder = new TextDecoder('utf-8');
+                let headerEnd = 0;
+                for (let i = 0; i < docBytes.length - 1; i++) {
+                    if (docBytes[i] === 0x0d && docBytes[i + 1] === 0x0a) {
+                        headerEnd = i;
+                        break;
+                    }
+                }
+
+                // Extract byte count from header: $518\r\n -> "518"
+                const headerText = decoder.decode(docBytes.slice(1, headerEnd));
+                const byteCount = parseInt(headerText, 10);
+                const dataStart = headerEnd + 2; // Skip past \r\n
+
+                console.log('[ShareableMode] Layer 2.5 - Redis protocol: byte count =', byteCount, ', data starts at:', dataStart);
+
+                // Extract exactly byteCount bytes (ignore trailing \r\n)
+                const actualDocBytes = docBytes.slice(dataStart, dataStart + byteCount);
+                console.log('[ShareableMode] Layer 2.5 - Extracted doc bytes length:', actualDocBytes.length);
+                console.log('[ShareableMode] Layer 2.5 - First 20 bytes after skip:', Array.from(actualDocBytes.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+
+                this.doc = Automerge.load(actualDocBytes);
+                console.log('[ShareableMode] Layer 3 - Loaded document:', this.doc);
+                console.log('[ShareableMode] Layer 4 - Document text property:', this.doc.text);
+                console.log('[ShareableMode] Layer 4 - Document keys:', Object.keys(this.doc));
+
+                // Convert Automerge Text object to plain string
+                const textValue = this.doc.text ? this.doc.text.toString() : '';
+                this.prevText = textValue;
+                console.log('[ShareableMode] Layer 5 - prevText set to:', this.prevText);
+                EditorCore.log(`Loaded document from server (${docBytes.length} bytes)`, 'shareable');
+            } else {
+                console.error('[ShareableMode] AM.SAVE request failed:', response.status);
+                EditorCore.log('Failed to load document from server, creating new local document', 'error');
+                const baseDoc = Automerge.init();
+                this.doc = Automerge.change(baseDoc, doc => {
+                    doc.text = '';
+                });
+                this.prevText = '';
+            }
+        } catch (error) {
+            console.error('[ShareableMode] Error loading document:', error);
+            EditorCore.log(`Error loading document: ${error.message}`, 'error');
+            const baseDoc = Automerge.init();
+            this.doc = Automerge.change(baseDoc, doc => {
+                doc.text = '';
+            });
+            this.prevText = '';
+        }
 
         // Set up WebSocket for changes
         this.socket = EditorCore.setupWebSocket(
@@ -421,13 +503,15 @@ const ShareableMode = {
         this._currentHandler = newHandler;
         editor.addEventListener('input', newHandler);
 
-        // Fetch current text from server
-        await this.fetchServerText(docKey);
-
-        // Explicitly update the editor with fetched content
+        // Update the editor with loaded content
         const textarea = document.getElementById('editor-shareable');
-        textarea.value = this.doc.text || '';
-        this.prevText = this.doc.text || '';
+        // Convert Automerge Text object to plain string
+        const textToDisplay = this.doc.text ? this.doc.text.toString() : '';
+        console.log('[ShareableMode] Layer 6 - Setting textarea value to:', textToDisplay);
+        console.log('[ShareableMode] Layer 6 - Textarea element:', textarea);
+        textarea.value = textToDisplay;
+        this.prevText = textToDisplay;
+        console.log('[ShareableMode] Layer 7 - Textarea value after set:', textarea.value);
 
         EditorCore.log(`Connected to room: ${roomName}`, 'shareable');
 
@@ -468,15 +552,30 @@ const ShareableMode = {
      */
     handleIncomingMessage(messageData) {
         try {
+            console.log('[ShareableMode] === INCOMING CHANGE DIAGNOSTIC ===');
+            console.log('[ShareableMode] Received message (base64):', messageData.substring(0, 50) + '...');
             const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
+            console.log('[ShareableMode] Decoded change bytes, length:', changeBytes.length);
             EditorCore.log('Received change from server', 'shareable');
 
+            console.log('[ShareableMode] Before apply - doc.text:', this.doc.text);
+            console.log('[ShareableMode] Before apply - doc actor:', Automerge.getActorId(this.doc));
+            console.log('[ShareableMode] Before apply - doc history length:', Automerge.getHistory(this.doc).length);
+
             const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
+
+            console.log('[ShareableMode] After apply - doc.text:', newDoc.text);
+            console.log('[ShareableMode] After apply - doc actor:', Automerge.getActorId(newDoc));
+            console.log('[ShareableMode] After apply - doc history length:', Automerge.getHistory(newDoc).length);
+            console.log('[ShareableMode] Text changed?', this.doc.text !== newDoc.text);
+
             this.doc = newDoc;
 
             this.updateEditor();
             this.updateDocInfo();
         } catch (error) {
+            console.error('[ShareableMode] Error handling message:', error);
+            console.error('[ShareableMode] Stack:', error.stack);
             EditorCore.log(`Error handling message: ${error.message}`, 'error');
         }
     },
@@ -508,16 +607,26 @@ const ShareableMode = {
             return;
         }
 
+        console.log('[ShareableMode] === EDIT DIAGNOSTIC ===');
+        console.log('[ShareableMode] Before local change - doc.text:', this.doc.text);
+        console.log('[ShareableMode] Before local change - actor:', Automerge.getActorId(this.doc));
+        console.log('[ShareableMode] Splice operation:', splice);
+
         // Update local document
         this.doc = Automerge.change(this.doc, d => {
             d.text = newText;
         });
         this.prevText = newText;
 
+        console.log('[ShareableMode] After local change - doc.text:', this.doc.text);
+        console.log('[ShareableMode] After local change - actor:', Automerge.getActorId(this.doc));
+
         EditorCore.log(`Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, 'shareable');
 
         // Apply to server
+        console.log('[ShareableMode] Sending splice to server...');
         await EditorCore.applySpliceToServer(docKey, splice);
+        console.log('[ShareableMode] Splice sent to server');
         this.updateDocInfo();
     },
 
@@ -527,7 +636,8 @@ const ShareableMode = {
     updateEditor() {
         const textarea = document.getElementById('editor-shareable');
         const oldText = textarea.value;
-        const newText = this.doc.text || '';
+        // Convert Automerge Text object to plain string
+        const newText = this.doc.text ? this.doc.text.toString() : '';
         const cursorPos = textarea.selectionStart;
 
         if (newText !== oldText) {
@@ -559,7 +669,8 @@ const ShareableMode = {
         if (!this.doc) return;
 
         const history = Automerge.getHistory(this.doc);
-        document.getElementById('doc-version-shareable').textContent = `v${history.length}`;
+        const textLength = this.doc.text ? this.doc.text.toString().length : 0;
+        document.getElementById('doc-version-shareable').textContent = `v${history.length} (${textLength} chars)`;
     },
 
     /**
@@ -1417,17 +1528,27 @@ async function handleEdit(editor) {
  */
 async function applySpliceToServer(docKey, splice) {
     try {
-        // Use AM.SPLICETEXT via PUT to apply the splice operation
-        // Webdis PUT format: PUT /COMMAND/arg1/arg2/... with body as last argument
-        const response = await fetch(`${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'text/plain'
-            },
-            body: splice.text
-        });
-        const data = await response.json();
+        let response;
+        if (splice.text === '') {
+            // Webdis doesn't send empty PUT body as an argument to Redis
+            // Use GET with trailing slash for empty string (deletions)
+            const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}/`;
+            console.log('[Dual Mode] Deletion - using GET with trailing slash:', url);
+            response = await fetch(url);
+        } else {
+            // For insertions/replacements, use PUT with text in body
+            const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`;
+            console.log('[Dual Mode] Insertion - using PUT:', url);
+            response = await fetch(url, {
+                method: 'PUT',
+                headers: {
+                    'Content-Type': 'text/plain'
+                },
+                body: splice.text
+            });
+        }
 
+        const data = await response.json();
         console.log('AM.SPLICETEXT response:', data);
 
         if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
@@ -1443,33 +1564,62 @@ async function applySpliceToServer(docKey, splice) {
 
 /**
  * Initialize client documents from server.
- * For now, starts with empty documents - server sync happens via pub/sub.
- * Future: Use AM.SAVE when Webdis supports binary responses properly.
+ * Loads the authoritative document from Redis using AM.SAVE so all clients share the same document history.
+ * Use .raw endpoint because Webdis .json endpoint can't handle binary data.
  * @param {string} docKey - The document key to load
  * @returns {boolean} True if initialization successful
  */
 async function loadFromRedis(docKey) {
     try {
-        // Initialize both editors with empty Automerge documents
-        // They will sync via pub/sub as changes are applied
-        const baseDoc = Automerge.init();
-        const initialDoc = Automerge.change(baseDoc, doc => {
-            doc.text = '';
-        });
+        // Load the document from Redis to ensure all clients share the same document history
+        // Use .raw endpoint because Webdis .json endpoint can't handle binary data
+        const response = await fetch(`${WEBDIS_URL}/AM.SAVE/${docKey}.raw`);
 
-        leftDoc = Automerge.clone(initialDoc);
-        rightDoc = Automerge.clone(initialDoc);
+        if (response.ok) {
+            // Get raw binary data as ArrayBuffer
+            const arrayBuffer = await response.arrayBuffer();
+            const docBytes = new Uint8Array(arrayBuffer);
+
+            // Webdis .raw returns Redis protocol format: $NNN\r\n<data>\r\n
+            // Parse the bulk string header to get exact byte count
+            const decoder = new TextDecoder('utf-8');
+            let headerEnd = 0;
+            for (let i = 0; i < docBytes.length - 1; i++) {
+                if (docBytes[i] === 0x0d && docBytes[i + 1] === 0x0a) {
+                    headerEnd = i;
+                    break;
+                }
+            }
+
+            // Extract byte count from header: $518\r\n -> "518"
+            const headerText = decoder.decode(docBytes.slice(1, headerEnd));
+            const byteCount = parseInt(headerText, 10);
+            const dataStart = headerEnd + 2; // Skip past \r\n
+
+            // Extract exactly byteCount bytes (ignore trailing \r\n)
+            const actualDocBytes = docBytes.slice(dataStart, dataStart + byteCount);
+
+            // Both editors load the same document from server
+            leftDoc = Automerge.load(actualDocBytes);
+            rightDoc = Automerge.load(actualDocBytes);
+
+            log(`Loaded document from server (${actualDocBytes.length} bytes, ${docBytes.length - actualDocBytes.length} header bytes)`, 'server');
+        } else {
+            log(`Failed to load document from server: ${response.status}`, 'error');
+            return false;
+        }
 
         // Initialize previous text state for diff tracking
-        leftPrevText = '';
-        rightPrevText = '';
+        // Convert Automerge Text objects to plain strings
+        leftPrevText = leftDoc.text ? leftDoc.text.toString() : '';
+        rightPrevText = rightDoc.text ? rightDoc.text.toString() : '';
 
         updateEditor('left');
         updateEditor('right');
         updateDocInfo('left');
         updateDocInfo('right');
 
-        log('Editors initialized (will sync via pub/sub)', 'server');
+        log('Editors initialized from server document', 'server');
         return true;
     } catch (error) {
         log(`Error initializing editors: ${error.message}`, 'error');
@@ -1490,7 +1640,8 @@ function updateEditor(editor) {
 
     const textarea = document.getElementById(`editor-${editor}`);
     const oldText = textarea.value;
-    const newText = doc.text || '';
+    // Convert Automerge Text object to plain string
+    const newText = doc.text ? doc.text.toString() : '';
     const cursorPos = textarea.selectionStart;
     const cursorEnd = textarea.selectionEnd;
 
@@ -1561,9 +1712,11 @@ function updateDocInfo(editor) {
 
     const infoDiv = document.getElementById(`info-${editor}`);
     const history = Automerge.getHistory(doc);
+    // Convert Automerge Text object to plain string for length calculation
+    const textLength = doc.text ? doc.text.toString().length : 0;
 
     infoDiv.innerHTML = `
-        <div>Characters: ${(doc.text || '').length}</div>
+        <div>Characters: ${textLength}</div>
         <div>Changes: ${history.length}</div>
         <div>Peer: ${editor === 'left' ? leftPeerId.slice(0, 8) : rightPeerId.slice(0, 8)}</div>
     `;
