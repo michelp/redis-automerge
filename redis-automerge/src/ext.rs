@@ -37,8 +37,8 @@
 //! ```
 
 use automerge::{
-    transaction::Transactable, Automerge, AutomergeError, Change, ObjId, ReadDoc, ScalarValue,
-    Value, ROOT,
+    transaction::Transactable, Automerge, AutomergeError, Change, ChangeHash, ObjId, ReadDoc,
+    ScalarValue, Value, ROOT,
 };
 
 /// Represents a diff operation parsed from unified diff format
@@ -1300,6 +1300,41 @@ impl RedisAutomergeClient {
         };
 
         Ok(Some(self.doc.length(&list_obj)))
+    }
+
+    /// Get changes from the document that are not in the provided have_deps list.
+    ///
+    /// This exposes the Automerge `get_changes` API, which returns all changes
+    /// that are not in the provided list of change hashes. If an empty list is
+    /// provided, all changes in the document are returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `have_deps` - Slice of ChangeHash values representing changes already known
+    ///
+    /// # Returns
+    ///
+    /// A vector of Change references for changes not in have_deps
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("field", "value").unwrap();
+    ///
+    /// // Get all changes
+    /// let all_changes = client.get_changes(&[]);
+    /// assert_eq!(all_changes.len(), 1);
+    ///
+    /// // Get changes we don't have
+    /// let hash = all_changes[0].hash();
+    /// let new_changes = client.get_changes(&[hash]);
+    /// assert_eq!(new_changes.len(), 0);
+    /// ```
+    pub fn get_changes(&mut self, have_deps: &[ChangeHash]) -> Vec<&Change> {
+        self.doc.get_changes(have_deps)
     }
 
     /// Splice text at the specified path.
