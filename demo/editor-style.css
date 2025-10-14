@@ -408,6 +408,18 @@ textarea:focus {
     gap: 5px;
 }
 
+.room-item-container {
+    margin-bottom: 5px;
+}
+
+.room-item-container.current-room {
+    background: #f0f4ff;
+    border-radius: 6px;
+    padding: 5px;
+    margin-left: -5px;
+    margin-right: -5px;
+}
+
 .room-item {
     padding: 12px;
     background: white;
@@ -424,6 +436,25 @@ textarea:focus {
     background: #eff6ff;
     border-color: #667eea;
     transform: translateX(2px);
+}
+
+.peer-list {
+    margin-top: 5px;
+    margin-left: 20px;
+    padding-left: 10px;
+    border-left: 2px solid #667eea;
+}
+
+.peer-item {
+    padding: 4px 8px;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+    color: #667eea;
+    background: white;
+    border-radius: 3px;
+    margin-bottom: 3px;
+    display: inline-block;
+    margin-right: 5px;
 }
 
 .room-name {
@@ -594,6 +625,11 @@ textarea:focus {
 
 .action-button:hover {
     background: #5568d3;
+}
+
+.action-button.copy-success {
+    background: #10b981 !important;
+    transition: background 0.3s ease;
 }
 
 #connection-status-shareable {

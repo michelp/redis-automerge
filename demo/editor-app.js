@@ -228,6 +228,11 @@ const ShareableMode = {
     prevText: '',
     currentRoom: null,
     roomList: [],
+    roomPeers: {}, // Track peers by room: { roomName: Set of peerIds }
+    _currentHandler: null,
+    _refreshDebounce: null,
+    refreshInterval: null,
+    heartbeatInterval: null,
 
     /**
      * Initialize shareable mode
@@ -241,15 +246,21 @@ const ShareableMode = {
         if (urlRoom) {
             EditorCore.log(`Room from URL: ${urlRoom}`, 'shareable');
             // Auto-select shareable tab
-            switchMode('shareable');
-            // Show room but don't auto-join (user clicks to join)
+            if (typeof switchMode !== 'undefined') {
+                switchMode('shareable');
+            }
+            // Auto-join the room from URL
             await this.refreshRoomList();
+            await this.joinRoom(urlRoom);
         } else {
             await this.refreshRoomList();
         }
 
         // Subscribe to room list updates
         this.subscribeToRoomEvents();
+
+        // Periodically refresh room list to update user counts (lightweight operation)
+        this.startRoomListRefresh();
     },
 
     /**
@@ -357,6 +368,21 @@ const ShareableMode = {
      * @param {string} roomName - The room name
      */
     async joinRoom(roomName) {
+        // Check if already in this room
+        if (this.currentRoom === roomName) {
+            EditorCore.log(`Already connected to room: ${roomName}`, 'shareable');
+            return;
+        }
+
+        // If already in another room, disconnect first
+        if (this.currentRoom) {
+            EditorCore.log(`Leaving room: ${this.currentRoom}`, 'shareable');
+            if (this.socket) {
+                this.socket.close();
+                this.socket = null;
+            }
+        }
+
         const docKey = `am:room:${roomName}`;
 
         EditorCore.log(`Joining room: ${roomName}`, 'shareable');
@@ -378,16 +404,30 @@ const ShareableMode = {
 
         this.currentRoom = roomName;
 
+        // Announce presence immediately
+        await this.announcePresence(roomName);
+
+        // Start heartbeat to maintain presence
+        this.startHeartbeat(roomName);
+
         // Update UI
         document.getElementById('current-room-name').textContent = roomName;
         document.getElementById('sync-status-shareable-editor').textContent = 'Syncing ✓';
 
-        // Set up editor event listener
+        // Set up editor event listener (remove old listener first to avoid duplicates)
         const editor = document.getElementById('editor-shareable');
-        editor.addEventListener('input', EditorCore.debounce(() => this.handleEdit(), 300));
+        const newHandler = EditorCore.debounce(() => this.handleEdit(), 300);
+        editor.removeEventListener('input', this._currentHandler);
+        this._currentHandler = newHandler;
+        editor.addEventListener('input', newHandler);
 
         // Fetch current text from server
         await this.fetchServerText(docKey);
+
+        // Explicitly update the editor with fetched content
+        const textarea = document.getElementById('editor-shareable');
+        textarea.value = this.doc.text || '';
+        this.prevText = this.doc.text || '';
 
         EditorCore.log(`Connected to room: ${roomName}`, 'shareable');
 
@@ -395,6 +435,9 @@ const ShareableMode = {
         const url = new URL(window.location);
         url.searchParams.set('room', roomName);
         window.history.pushState({}, '', url);
+
+        // Trigger immediate room list refresh to update user count
+        await this.triggerRoomListRefresh();
     },
 
     /**
@@ -522,7 +565,13 @@ const ShareableMode = {
     /**
      * Disconnect from current room
      */
-    disconnect() {
+    async disconnect() {
+        // Stop heartbeat
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
+
         if (this.socket) {
             this.socket.close();
             this.socket = null;
@@ -543,6 +592,9 @@ const ShareableMode = {
         window.history.pushState({}, '', url);
 
         EditorCore.log('Disconnected from room', 'shareable');
+
+        // Trigger immediate room list refresh to update user count
+        await this.triggerRoomListRefresh();
     },
 
     /**
@@ -555,11 +607,36 @@ const ShareableMode = {
         url.searchParams.set('room', this.currentRoom);
         const link = url.toString();
 
+        // Find the button that was clicked
+        const buttons = document.querySelectorAll('.toolbar-actions button');
+        let copyButton = null;
+        for (const btn of buttons) {
+            if (btn.textContent.includes('Copy Link') || btn.textContent.includes('Link Copied')) {
+                copyButton = btn;
+                break;
+            }
+        }
+
         try {
             await navigator.clipboard.writeText(link);
-            alert(`Link copied: ${link}`);
             EditorCore.log('Shareable link copied to clipboard', 'shareable');
+
+            // Provide visual feedback
+            if (copyButton) {
+                const originalText = copyButton.innerHTML;
+                const originalBg = copyButton.style.background;
+
+                copyButton.innerHTML = '✓ Link Copied';
+                copyButton.classList.add('copy-success');
+
+                // Revert after 2.5 seconds
+                setTimeout(() => {
+                    copyButton.innerHTML = originalText;
+                    copyButton.classList.remove('copy-success');
+                }, 2500);
+            }
         } catch (error) {
+            // Fallback for browsers that don't support clipboard API
             prompt('Copy this link:', link);
         }
     },
@@ -580,7 +657,7 @@ const ShareableMode = {
                 return key.replace('am:room:', '');
             });
 
-            // Get active user counts
+            // Get active user counts and peer lists
             const roomsWithUsers = await Promise.all(
                 rooms.map(async (roomName) => {
                     // Channel format: changes:am:room:{roomName}
@@ -597,9 +674,12 @@ const ShareableMode = {
                         activeUsers = pubsubData[1] || 0;
                     }
 
-                    console.log(`Room ${roomName}: channel=${channel}, activeUsers=${activeUsers}`, numsubData);
+                    // Get peer list for this room
+                    const peers = await this.getPeersInRoom(roomName);
 
-                    return { roomName, activeUsers };
+                    console.log(`Room ${roomName}: channel=${channel}, activeUsers=${activeUsers}, peers=${peers.join(', ')}`, numsubData);
+
+                    return { roomName, activeUsers, peers };
                 })
             );
 
@@ -622,13 +702,25 @@ const ShareableMode = {
             return;
         }
 
-        listDiv.innerHTML = this.roomList.map(({ roomName, activeUsers }) => {
+        listDiv.innerHTML = this.roomList.map(({ roomName, activeUsers, peers }) => {
             const userClass = activeUsers > 0 ? 'active' : '';
             const userText = activeUsers === 1 ? '1 user' : `${activeUsers} users`;
+
+            // Show peers if this is the current room
+            const isCurrentRoom = this.currentRoom === roomName;
+            const peerListHtml = isCurrentRoom && peers && peers.length > 0
+                ? `<div class="peer-list">${peers.map(peerId =>
+                    `<div class="peer-item">${peerId.slice(0, 8)}</div>`
+                  ).join('')}</div>`
+                : '';
+
             return `
-                <div class="room-item" onclick="ShareableMode.joinRoom('${roomName}')">
-                    <span class="room-name">${roomName}</span>
-                    <span class="room-users ${userClass}">${userText}</span>
+                <div class="room-item-container ${isCurrentRoom ? 'current-room' : ''}">
+                    <div class="room-item" onclick="ShareableMode.joinRoom('${roomName}')">
+                        <span class="room-name">${roomName}</span>
+                        <span class="room-users ${userClass}">${userText}</span>
+                    </div>
+                    ${peerListHtml}
                 </div>
             `;
         }).join('');
@@ -677,6 +769,78 @@ const ShareableMode = {
         this.roomListSocket.onclose = () => {
             EditorCore.log('Room list WebSocket closed', 'shareable');
         };
+    },
+
+    /**
+     * Start periodic room list refresh with smart debouncing
+     */
+    startRoomListRefresh() {
+        let lastRefresh = Date.now();
+        const minInterval = 2000; // Minimum 2 seconds between refreshes
+
+        // Refresh every 5 seconds normally
+        this.refreshInterval = setInterval(async () => {
+            const now = Date.now();
+            if (now - lastRefresh >= minInterval) {
+                await this.refreshRoomList();
+                lastRefresh = now;
+            }
+        }, 5000);
+    },
+
+    /**
+     * Trigger an immediate room list refresh (debounced)
+     */
+    async triggerRoomListRefresh() {
+        // Debounce rapid calls
+        clearTimeout(this._refreshDebounce);
+        this._refreshDebounce = setTimeout(async () => {
+            await this.refreshRoomList();
+        }, 500);
+    },
+
+    /**
+     * Announce presence in a room
+     */
+    async announcePresence(roomName) {
+        try {
+            const presenceKey = `presence:${roomName}`;
+            // Use Redis SET with expiration to track presence
+            await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${this.peerId}/10/${this.peerId}`);
+            EditorCore.log(`Announced presence in ${roomName}`, 'shareable');
+        } catch (error) {
+            EditorCore.log(`Error announcing presence: ${error.message}`, 'error');
+        }
+    },
+
+    /**
+     * Start heartbeat to maintain presence
+     */
+    startHeartbeat(roomName) {
+        // Announce presence every 5 seconds
+        this.heartbeatInterval = setInterval(async () => {
+            if (this.currentRoom === roomName) {
+                await this.announcePresence(roomName);
+            }
+        }, 5000);
+    },
+
+    /**
+     * Get peers in a room
+     */
+    async getPeersInRoom(roomName) {
+        try {
+            const pattern = `presence:${roomName}:*`;
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/${pattern}`);
+            const data = await response.json();
+
+            const keys = data.KEYS || [];
+            const peerIds = keys.map(key => key.split(':').pop());
+            return peerIds;
+        } catch (error) {
+            EditorCore.log(`Error getting peers: ${error.message}`, 'error');
+            return [];
+        }
     }
 };
 
