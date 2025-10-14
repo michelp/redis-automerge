@@ -8,8 +8,9 @@ services:
     image: nicolas/webdis:latest
     depends_on:
       - redis
-    ports:
-      - "7379:7379"
+    # Port 7379 only exposed internally - accessed via nginx proxy at /api
+    expose:
+      - "7379"
     environment:
       REDIS_HOST: redis
     volumes:
