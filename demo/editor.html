@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Redis-Automerge Collaborative Editor Demo</title>
+    <title>Pamliset Demo</title>
     <link rel="stylesheet" href="editor-style.css">
 </head>
 <body>
-    <h1>Redis-Automerge Collaborative Editor</h1>
+    <h1>Pamliset</h1>
 
     <!-- Shareable Editor Mode Panel -->
     <div id="shareable-mode" class="mode-panel active">
@@ -23,15 +23,9 @@
 
             <div class="document-management">
                 <h4>Create Document</h4>
-                <button onclick="ShareableMode.createRandomDocument()">
-                    🎲 Random Document
-                </button>
-                <input id="custom-document-name" type="text" placeholder="Custom document name">
+                <input id="custom-document-name" type="text" placeholder="New document name">
                 <button onclick="ShareableMode.createCustomDocument()">
-                    ✏️ Create Custom
-                </button>
-                <button onclick="ShareableMode.refreshDocumentList()" style="background: #10b981;">
-                    🔄 Refresh List
+                    New Document
                 </button>
             </div>
         </div>
@@ -41,11 +35,10 @@
             <div class="editor-toolbar">
                 <div class="document-info">
                     <span>Document: <strong id="current-document-name">Not connected</strong></span>
-                    <span id="peer-id-shareable" class="peer-id"></span>
                 </div>
                 <div class="toolbar-actions">
                     <button onclick="ShareableMode.copyShareableLink()" class="action-button">
-                        📋 Copy Link
+                        📋 Share Link
                     </button>
                 </div>
             </div>
@@ -60,12 +53,29 @@
             </div>
         </div>
 
-        <!-- Right Sidebar: History -->
+        <!-- Right Sidebar: Chat & History -->
         <div class="history-sidebar">
-            <h3>History</h3>
-            <div class="history-container">
-                <div id="history-list" class="history-list">
-                    <!-- Dynamically populated -->
+            <!-- Chat Section (Top Half) -->
+            <div class="chat-section">
+                <h3>Chat</h3>
+                <div class="chat-container">
+                    <div id="chat-list" class="chat-list">
+                        <!-- Dynamically populated -->
+                    </div>
+                </div>
+                <div class="chat-input-container">
+                    <input id="chat-input" type="text" placeholder="Type a message..." />
+                    <button onclick="ShareableMode.sendChatMessage()">Send</button>
+                </div>
+            </div>
+
+            <!-- History Section (Bottom Half) -->
+            <div class="history-section">
+                <h3>History</h3>
+                <div class="history-container">
+                    <div id="history-list" class="history-list">
+                        <!-- Dynamically populated -->
+                    </div>
                 </div>
             </div>
         </div>

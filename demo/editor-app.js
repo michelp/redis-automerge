@@ -1,17 +1,10 @@
 // ============================================================================
-// EditorCore - Shared primitives used by both modes
+// EditorCore - Shared primitives
 // ============================================================================
 const EditorCore = {
     WEBDIS_URL: `${window.location.protocol}//${window.location.host}/api`,
     WEBDIS_WS_URL: `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api`,
 
-    /**
-     * Generate a unique peer ID for this editor instance.
-     * @returns {string} A unique peer ID string
-     */
-    generatePeerId() {
-        return 'peer-' + Math.random().toString(36).substring(2, 15);
-    },
 
     /**
      * Debounce function to limit how often a function can be called.
@@ -229,17 +222,16 @@ const EditorCore = {
 };
 
 // ============================================================================
-// ShareableMode - Single editor with document management
+// ShareableMode - editor with document management
 // ============================================================================
 const ShareableMode = {
     doc: null,
-    peerId: null,
     socket: null,
     documentListSocket: null,
     prevText: '',
     currentDocument: null,
     documentList: [],
-    documentPeers: {}, // Track peers by document: { documentName: Set of peerIds }
+    documentPeers: {}, // Track peers by document: { documentName: Set of actorIds }
     documentActivity: {}, // Track last activity timestamp by document: { documentName: timestamp }
     _currentHandler: null,
     _blurHandler: null,
@@ -249,12 +241,18 @@ const ShareableMode = {
     isLocallyEditing: false, // Track if we're actively making changes
 
     /**
+     * Get the actor ID from the current document
+     * @returns {string|null} Actor ID or null if no document
+     */
+    getActorId() {
+        if (!this.doc) return null;
+        return Automerge.getActorId(this.doc);
+    },
+
+    /**
      * Initialize shareable mode
      */
     async initialize() {
-        this.peerId = EditorCore.generatePeerId();
-        document.getElementById('peer-id-shareable').textContent = `Peer ID: ${this.peerId.slice(0, 8)}`;
-
         // Check for document in URL
         const urlDocument = this.parseUrlDocument();
         if (urlDocument) {
@@ -284,22 +282,6 @@ const ShareableMode = {
     parseUrlDocument() {
         const params = new URLSearchParams(window.location.search);
         return params.get('document');
-    },
-
-    /**
-     * Generate a random 8-character document ID
-     * @returns {string} Random document ID
-     */
-    generateDocumentId() {
-        return Math.random().toString(36).substring(2, 10);
-    },
-
-    /**
-     * Create a new document with random ID
-     */
-    async createRandomDocument() {
-        const documentId = this.generateDocumentId();
-        await this.createDocument(documentId);
     },
 
     /**
@@ -461,6 +443,7 @@ const ShareableMode = {
                 const baseDoc = Automerge.init();
                 this.doc = Automerge.change(baseDoc, doc => {
                     doc.text = "";
+                    doc.chat_history = [];
                 });
                 this.prevText = '';
             }
@@ -470,13 +453,14 @@ const ShareableMode = {
             const baseDoc = Automerge.init();
             this.doc = Automerge.change(baseDoc, doc => {
                 doc.text = "";
+                doc.chat_history = [];
             });
             this.prevText = '';
         }
 
         // Set up WebSocket for changes
         this.socket = EditorCore.setupWebSocket(
-            this.peerId,
+            this.getActorId(),
             docKey,
             (channel, messageData) => this.handleIncomingMessage(messageData),
             (command) => this.handleKeyspaceNotification(docKey, command)
@@ -528,6 +512,20 @@ const ShareableMode = {
 
         // Load and display history
         await this.loadHistory(docKey);
+
+        // Load and display chat messages (initialize if needed)
+        if (!this.doc.chat_history) {
+            this.doc.chat_history = [];
+        }
+        this.displayChatMessages();
+
+        // Set up Enter key listener for chat input
+        const chatInput = document.getElementById('chat-input');
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                this.sendChatMessage();
+            }
+        });
 
         // Trigger immediate document list refresh to update user count
         await this.triggerDocumentListRefresh();
@@ -871,19 +869,28 @@ const ShareableMode = {
      */
     handleIncomingMessage(messageData) {
         try {
-            // Get old text before applying change
+            // Get old text and chat history before applying change
             const oldText = this.doc.text ? this.doc.text.toString() : '';
+            const oldChatLength = this.doc.chat_history ? this.doc.chat_history.length : 0;
 
             const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
             const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
 
             // Get new text after applying change
             const newText = newDoc.text ? newDoc.text.toString() : '';
+            const newChatLength = newDoc.chat_history ? newDoc.chat_history.length : 0;
 
             this.doc = newDoc;
 
             this.updateEditor();
             this.updateDocInfo();
+
+            // Check if chat history changed
+            if (newChatLength > oldChatLength) {
+                // New chat message received
+                this.displayChatMessages();
+                EditorCore.log(`New chat message received`, 'shareable');
+            }
 
             // Only update history if the text actually changed
             // (Skip if this is our own change being echoed back)
@@ -1345,9 +1352,10 @@ const ShareableMode = {
      */
     async announcePresence(documentName) {
         try {
+            const actorId = this.getActorId();
             const presenceKey = `presence:${documentName}`;
             // Use Redis SET with expiration to track presence
-            await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${this.peerId}/10/${this.peerId}`);
+            await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${actorId}/10/${actorId}`);
             EditorCore.log(`Announced presence in ${documentName}`, 'shareable');
         } catch (error) {
             EditorCore.log(`Error announcing presence: ${error.message}`, 'error');
@@ -1382,6 +1390,93 @@ const ShareableMode = {
             EditorCore.log(`Error getting peers: ${error.message}`, 'error');
             return [];
         }
+    },
+
+    /**
+     * Send a chat message
+     */
+    async sendChatMessage() {
+        if (!this.currentDocument) return;
+
+        const chatInput = document.getElementById('chat-input');
+        const messageText = chatInput.value.trim();
+
+        if (!messageText) return;
+
+        const docKey = `am:document:${this.currentDocument}`;
+        const actorId = this.getActorId();
+
+        EditorCore.log(`Sending chat message: "${messageText}"`, 'shareable');
+
+        // Apply change locally using Automerge
+        const oldDoc = this.doc;
+        const newDoc = Automerge.change(oldDoc, doc => {
+            if (!doc.chat_history) {
+                doc.chat_history = [];
+            }
+            doc.chat_history.push({
+                actor: actorId,
+                message: messageText,
+                timestamp: Date.now()
+            });
+        });
+
+        // Get the changes that were just created
+        const changes = Automerge.getChanges(oldDoc, newDoc);
+
+        // Update local document
+        this.doc = newDoc;
+
+        // Send changes to server via AM.APPLY
+        await this.applyChangesToServer(docKey, changes);
+
+        // Clear input
+        chatInput.value = '';
+
+        // Update chat display
+        this.displayChatMessages();
+
+        EditorCore.log(`Chat message sent`, 'shareable');
+    },
+
+    /**
+     * Display chat messages from the document
+     */
+    displayChatMessages() {
+        const chatListDiv = document.getElementById('chat-list');
+
+        if (!this.doc || !this.doc.chat_history || this.doc.chat_history.length === 0) {
+            chatListDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No messages yet</div>';
+            return;
+        }
+
+        // Display all messages (oldest first, newest at bottom)
+        chatListDiv.innerHTML = this.doc.chat_history.map((msg, index) => {
+            const time = new Date(msg.timestamp).toLocaleTimeString();
+            const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+
+            return `
+                <div class="chat-message">
+                    <div class="chat-message-header">
+                        <span class="chat-message-actor">${actorShort}</span>
+                        <span class="chat-message-time">${time}</span>
+                    </div>
+                    <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
+                </div>
+            `;
+        }).join('');
+
+        // Scroll to bottom to show newest messages
+        chatListDiv.scrollTop = chatListDiv.scrollHeight;
+    },
+
+    /**
+     * Escape HTML to prevent XSS
+     */
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
     }
 };
 
