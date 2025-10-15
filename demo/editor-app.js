@@ -229,19 +229,20 @@ const EditorCore = {
 };
 
 // ============================================================================
-// ShareableMode - Single editor with room management
+// ShareableMode - Single editor with document management
 // ============================================================================
 const ShareableMode = {
     doc: null,
     peerId: null,
     socket: null,
-    roomListSocket: null,
+    documentListSocket: null,
     prevText: '',
-    currentRoom: null,
-    roomList: [],
-    roomPeers: {}, // Track peers by room: { roomName: Set of peerIds }
-    roomActivity: {}, // Track last activity timestamp by room: { roomName: timestamp }
+    currentDocument: null,
+    documentList: [],
+    documentPeers: {}, // Track peers by document: { documentName: Set of peerIds }
+    documentActivity: {}, // Track last activity timestamp by document: { documentName: timestamp }
     _currentHandler: null,
+    _blurHandler: null,
     _refreshDebounce: null,
     refreshInterval: null,
     heartbeatInterval: null,
@@ -254,151 +255,170 @@ const ShareableMode = {
         this.peerId = EditorCore.generatePeerId();
         document.getElementById('peer-id-shareable').textContent = `Peer ID: ${this.peerId.slice(0, 8)}`;
 
-        // Check for room in URL
-        const urlRoom = this.parseUrlRoom();
-        if (urlRoom) {
-            EditorCore.log(`Room from URL: ${urlRoom}`, 'shareable');
+        // Check for document in URL
+        const urlDocument = this.parseUrlDocument();
+        if (urlDocument) {
+            EditorCore.log(`Document from URL: ${urlDocument}`, 'shareable');
             // Auto-select shareable tab
             if (typeof switchMode !== 'undefined') {
                 switchMode('shareable');
             }
-            // Auto-join the room from URL
-            await this.refreshRoomList();
-            await this.joinRoom(urlRoom);
+            // Auto-join the document from URL
+            await this.refreshDocumentList();
+            await this.joinDocument(urlDocument);
         } else {
-            await this.refreshRoomList();
+            await this.refreshDocumentList();
         }
 
-        // Subscribe to room list updates
-        this.subscribeToRoomEvents();
+        // Subscribe to document list updates
+        this.subscribeToDocumentEvents();
 
-        // Periodically refresh room list to update user counts (lightweight operation)
-        this.startRoomListRefresh();
+        // Periodically refresh document list to update user counts (lightweight operation)
+        this.startDocumentListRefresh();
     },
 
     /**
-     * Parse room name from URL parameters
-     * @returns {string|null} Room name or null
+     * Parse document name from URL parameters
+     * @returns {string|null} Document name or null
      */
-    parseUrlRoom() {
+    parseUrlDocument() {
         const params = new URLSearchParams(window.location.search);
-        return params.get('room');
+        return params.get('document');
     },
 
     /**
-     * Generate a random 8-character room ID
-     * @returns {string} Random room ID
+     * Generate a random 8-character document ID
+     * @returns {string} Random document ID
      */
-    generateRoomId() {
+    generateDocumentId() {
         return Math.random().toString(36).substring(2, 10);
     },
 
     /**
-     * Create a new room with random ID
+     * Create a new document with random ID
      */
-    async createRandomRoom() {
-        const roomId = this.generateRoomId();
-        await this.createRoom(roomId);
+    async createRandomDocument() {
+        const documentId = this.generateDocumentId();
+        await this.createDocument(documentId);
     },
 
     /**
-     * Create a new room with custom name
+     * Create a new document with custom name
      */
-    async createCustomRoom() {
-        const input = document.getElementById('custom-room-name');
-        const roomName = input.value.trim();
+    async createCustomDocument() {
+        const input = document.getElementById('custom-document-name');
+        const documentName = input.value.trim();
 
-        if (!roomName) {
-            alert('Please enter a room name');
+        if (!documentName) {
+            alert('Please enter a document name');
             return;
         }
 
-        if (!this.validateRoomName(roomName)) {
-            alert('Room name must be 1-50 characters (letters, numbers, dash, underscore only)');
+        if (!this.validateDocumentName(documentName)) {
+            alert('Document name must be 1-50 characters (letters, numbers, dash, underscore only)');
             return;
         }
 
         input.value = '';
-        await this.createRoom(roomName);
+        await this.createDocument(documentName);
     },
 
     /**
-     * Validate room name format
-     * @param {string} name - Room name to validate
+     * Validate document name format
+     * @param {string} name - Document name to validate
      * @returns {boolean} True if valid
      */
-    validateRoomName(name) {
+    validateDocumentName(name) {
         return /^[a-zA-Z0-9_-]{1,50}$/.test(name);
     },
 
     /**
-     * Create a new room
-     * @param {string} roomName - The room name
+     * Create a new document
+     * @param {string} documentName - The document name
      */
-    async createRoom(roomName) {
-        const docKey = `am:room:${roomName}`;
+    async createDocument(documentName) {
+        const docKey = `am:document:${documentName}`;
 
-        EditorCore.log(`Creating room: ${roomName}`, 'shareable');
+        EditorCore.log(`Creating document: ${documentName}`, 'shareable');
 
-        // Check if room already exists
-        const exists = await this.checkRoomExists(docKey);
+        // Check if document already exists
+        const exists = await this.checkDocumentExists(docKey);
         if (exists) {
-            const join = confirm(`Room "${roomName}" already exists. Join instead?`);
+            const join = confirm(`Document "${documentName}" already exists. Join instead?`);
             if (join) {
-                await this.joinRoom(roomName);
+                await this.joinDocument(documentName);
             }
             return;
         }
 
-        // Create the room
+        // Create the document
         const success = await EditorCore.initializeDocument(docKey);
         if (success) {
-            EditorCore.log(`Room created: ${roomName}`, 'shareable');
-            await this.joinRoom(roomName);
+            EditorCore.log(`Document created: ${documentName}`, 'shareable');
+            await this.joinDocument(documentName);
         } else {
-            alert('Failed to create room. Please try again.');
+            alert('Failed to create document. Please try again.');
         }
     },
 
     /**
-     * Check if a room exists in Redis
+     * Check if a document exists in Redis
      * @param {string} docKey - The document key
      * @returns {Promise<boolean>} True if exists
      */
-    async checkRoomExists(docKey) {
+    async checkDocumentExists(docKey) {
         try {
             const response = await fetch(`${EditorCore.WEBDIS_URL}/EXISTS/${docKey}`);
             const data = await response.json();
             return data.EXISTS === 1 || data.EXISTS === true;
         } catch (error) {
-            EditorCore.log(`Error checking room existence: ${error.message}`, 'error');
+            EditorCore.log(`Error checking document existence: ${error.message}`, 'error');
             return false;
         }
     },
 
     /**
-     * Join an existing room
-     * @param {string} roomName - The room name
+     * Join an existing document
+     * @param {string} documentName - The document name
      */
-    async joinRoom(roomName) {
-        // Check if already in this room
-        if (this.currentRoom === roomName) {
-            EditorCore.log(`Already connected to room: ${roomName}`, 'shareable');
+    async joinDocument(documentName) {
+        // Check if already in this document
+        if (this.currentDocument === documentName) {
+            EditorCore.log(`Already connected to document: ${documentName}`, 'shareable');
             return;
         }
 
-        // If already in another room, disconnect first
-        if (this.currentRoom) {
-            EditorCore.log(`Leaving room: ${this.currentRoom}`, 'shareable');
+        // If already in another document, disconnect first
+        if (this.currentDocument) {
+            EditorCore.log(`Leaving document: ${this.currentDocument}`, 'shareable');
+
+            // Reset editing flag
+            this.isLocallyEditing = false;
+
+            // Clear the heartbeat interval
+            if (this.heartbeatInterval) {
+                clearInterval(this.heartbeatInterval);
+                this.heartbeatInterval = null;
+            }
+
+            // Close WebSocket
             if (this.socket) {
                 this.socket.close();
                 this.socket = null;
             }
+
+            // Clear the editor textarea
+            const editor = document.getElementById('editor-shareable');
+            editor.value = '';
+
+            // Clear history display
+            document.getElementById('history-list').innerHTML =
+                '<div style="padding: 20px; text-align: center; color: #999;">Loading history...</div>';
         }
 
-        const docKey = `am:room:${roomName}`;
+        const docKey = `am:document:${documentName}`;
 
-        EditorCore.log(`Joining room: ${roomName}`, 'shareable');
+        EditorCore.log(`Joining document: ${documentName}`, 'shareable');
 
         // Load the document from Redis to ensure all clients share the same document history
         // Use .raw endpoint because Webdis .json endpoint can't handle binary data
@@ -440,7 +460,7 @@ const ShareableMode = {
                 EditorCore.log('Failed to load document from server', 'error');
                 const baseDoc = Automerge.init();
                 this.doc = Automerge.change(baseDoc, doc => {
-                    doc.text = '';
+                    doc.text = "";
                 });
                 this.prevText = '';
             }
@@ -449,7 +469,7 @@ const ShareableMode = {
             EditorCore.log(`Error loading document: ${error.message}`, 'error');
             const baseDoc = Automerge.init();
             this.doc = Automerge.change(baseDoc, doc => {
-                doc.text = '';
+                doc.text = "";
             });
             this.prevText = '';
         }
@@ -462,16 +482,16 @@ const ShareableMode = {
             (command) => this.handleKeyspaceNotification(docKey, command)
         );
 
-        this.currentRoom = roomName;
+        this.currentDocument = documentName;
 
         // Announce presence immediately
-        await this.announcePresence(roomName);
+        await this.announcePresence(documentName);
 
         // Start heartbeat to maintain presence
-        this.startHeartbeat(roomName);
+        this.startHeartbeat(documentName);
 
         // Update UI
-        document.getElementById('current-room-name').textContent = roomName;
+        document.getElementById('current-document-name').textContent = documentName;
         document.getElementById('sync-status-shareable-editor').textContent = 'Syncing ✓';
 
         // Set up editor event listener (remove old listener first to avoid duplicates)
@@ -481,11 +501,16 @@ const ShareableMode = {
         this._currentHandler = newHandler;
         editor.addEventListener('input', newHandler);
 
-        // Update editor when it loses focus (to sync any pending changes)
-        editor.addEventListener('blur', () => {
+        // Update editor when it loses focus (remove old listener first to avoid duplicates)
+        const newBlurHandler = () => {
             EditorCore.log('Editor lost focus - syncing any pending changes', 'shareable');
             this.updateEditor();
-        });
+        };
+        if (this._blurHandler) {
+            editor.removeEventListener('blur', this._blurHandler);
+        }
+        this._blurHandler = newBlurHandler;
+        editor.addEventListener('blur', newBlurHandler);
 
         // Update the editor with loaded content
         const textarea = document.getElementById('editor-shareable');
@@ -494,18 +519,18 @@ const ShareableMode = {
         textarea.value = textToDisplay;
         this.prevText = textToDisplay;
 
-        EditorCore.log(`Connected to room: ${roomName}`, 'shareable');
+        EditorCore.log(`Connected to document: ${documentName}`, 'shareable');
 
         // Update URL without reloading
         const url = new URL(window.location);
-        url.searchParams.set('room', roomName);
+        url.searchParams.set('document', documentName);
         window.history.pushState({}, '', url);
 
         // Load and display history
         await this.loadHistory(docKey);
 
-        // Trigger immediate room list refresh to update user count
-        await this.triggerRoomListRefresh();
+        // Trigger immediate document list refresh to update user count
+        await this.triggerDocumentListRefresh();
     },
 
     /**
@@ -900,9 +925,9 @@ const ShareableMode = {
      * Handle local editor changes
      */
     async handleEdit() {
-        if (!this.currentRoom) return;
+        if (!this.currentDocument) return;
 
-        const docKey = `am:room:${this.currentRoom}`;
+        const docKey = `am:document:${this.currentDocument}`;
         const textarea = document.getElementById('editor-shareable');
         const newText = textarea.value;
         const oldText = this.prevText;
@@ -919,17 +944,85 @@ const ShareableMode = {
 
         EditorCore.log(`Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, 'shareable');
 
-        // Apply to server - server will create Automerge change and broadcast it
-        await EditorCore.applySpliceToServer(docKey, splice);
+        // Apply change locally using Automerge
+        const oldDoc = this.doc;
+        const newDoc = Automerge.change(oldDoc, doc => {
+            // In Automerge 3.x, text fields are plain strings
+            // Convert Text object to string if needed (for backwards compatibility)
+            const oldText = doc.text ? doc.text.toString() : '';
+            const newText = oldText.substring(0, splice.pos) +
+                           splice.text +
+                           oldText.substring(splice.pos + splice.del);
+            doc.text = newText;
+        });
 
-        // Only update prevText AFTER we've sent to server
-        // This ensures we track what we actually sent
+        // Get the changes that were just created
+        const changes = Automerge.getChanges(oldDoc, newDoc);
+
+        // Update local document
+        this.doc = newDoc;
+
+        // Send changes to server via AM.APPLY
+        await this.applyChangesToServer(docKey, changes);
+
+        // Update prevText
         this.prevText = newText;
+
+        // Update local UI
+        this.updateDocInfo();
+
+        // Update history sidebar with the local change
+        const changeDetails = this.calculateChangeDetails(oldText, newText);
+        const history = Automerge.getHistory(this.doc);
+        const latestChange = history[history.length - 1];
+
+        this.prependHistoryItem({
+            index: history.length,
+            timestamp: latestChange.change.time || Date.now(),
+            actor: latestChange.change.actor || 'unknown',
+            message: latestChange.change.message || 'Document change',
+            changeDetails: changeDetails
+        });
 
         // Clear editing flag after a short delay (to handle echo-back)
         setTimeout(() => {
             this.isLocallyEditing = false;
         }, 100);
+    },
+
+    /**
+     * Apply Automerge changes to the server
+     * @param {string} docKey - The document key
+     * @param {Array} changes - Array of Automerge change objects
+     */
+    async applyChangesToServer(docKey, changes) {
+        try {
+            for (const change of changes) {
+                EditorCore.log(`Sending change to server (${change.length} bytes)`, 'shareable');
+
+                // Send raw binary change to server via AM.APPLY
+                // The Uint8Array is sent directly as binary data
+                const response = await fetch(`${EditorCore.WEBDIS_URL}/AM.APPLY/${docKey}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/octet-stream'
+                    },
+                    body: change  // Send Uint8Array directly
+                });
+
+                const data = await response.json();
+                EditorCore.log(`Server response: ${JSON.stringify(data)}`, 'shareable');
+
+                if (data['AM.APPLY'] && (data['AM.APPLY'] === 'OK' || data['AM.APPLY'][0] === true)) {
+                    EditorCore.log(`Change applied successfully to server`, 'shareable');
+                } else {
+                    EditorCore.log(`AM.APPLY error: ${JSON.stringify(data)}`, 'error');
+                }
+            }
+        } catch (error) {
+            EditorCore.log(`Error applying changes to server: ${error.message}`, 'error');
+            console.error('Server apply error:', error);
+        }
     },
 
     /**
@@ -988,7 +1081,7 @@ const ShareableMode = {
     },
 
     /**
-     * Disconnect from current room
+     * Disconnect from current document
      */
     async disconnect() {
         // Stop heartbeat
@@ -1003,33 +1096,33 @@ const ShareableMode = {
         }
 
         this.doc = null;
-        this.currentRoom = null;
+        this.currentDocument = null;
         this.prevText = '';
 
         // Update UI
-        document.getElementById('current-room-name').textContent = 'Not connected';
+        document.getElementById('current-document-name').textContent = 'Not connected';
         document.getElementById('editor-shareable').value = '';
         document.getElementById('sync-status-shareable-editor').textContent = 'Not syncing';
 
-        // Remove room from URL
+        // Remove document from URL
         const url = new URL(window.location);
-        url.searchParams.delete('room');
+        url.searchParams.delete('document');
         window.history.pushState({}, '', url);
 
-        EditorCore.log('Disconnected from room', 'shareable');
+        EditorCore.log('Disconnected from document', 'shareable');
 
-        // Trigger immediate room list refresh to update user count
-        await this.triggerRoomListRefresh();
+        // Trigger immediate document list refresh to update user count
+        await this.triggerDocumentListRefresh();
     },
 
     /**
      * Copy shareable link to clipboard
      */
     async copyShareableLink() {
-        if (!this.currentRoom) return;
+        if (!this.currentDocument) return;
 
         const url = new URL(window.location);
-        url.searchParams.set('room', this.currentRoom);
+        url.searchParams.set('document', this.currentDocument);
         const link = url.toString();
 
         // Find the button that was clicked
@@ -1067,26 +1160,26 @@ const ShareableMode = {
     },
 
     /**
-     * Refresh the room list
+     * Refresh the document list
      */
-    async refreshRoomList() {
-        EditorCore.log('Refreshing room list', 'shareable');
+    async refreshDocumentList() {
+        EditorCore.log('Refreshing document list', 'shareable');
 
         try {
-            // Use KEYS to find all rooms (for demo; use SCAN in production)
-            const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/am:room:*`);
+            // Use KEYS to find all documents (for demo; use SCAN in production)
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/am:document:*`);
             const data = await response.json();
 
-            const rooms = (data.KEYS || []).map(key => {
-                // Extract room name from key
-                return key.replace('am:room:', '');
+            const documents = (data.KEYS || []).map(key => {
+                // Extract document name from key
+                return key.replace('am:document:', '');
             });
 
             // Get active user counts and peer lists
-            const roomsWithUsers = await Promise.all(
-                rooms.map(async (roomName) => {
-                    // Channel format: changes:am:room:{roomName}
-                    const docKey = `am:room:${roomName}`;
+            const documentsWithUsers = await Promise.all(
+                documents.map(async (documentName) => {
+                    // Channel format: changes:am:document:{documentName}
+                    const docKey = `am:document:${documentName}`;
                     const channel = `changes:${docKey}`;
                     const numsubResponse = await fetch(`${EditorCore.WEBDIS_URL}/PUBSUB/NUMSUB/${channel}`);
                     const numsubData = await numsubResponse.json();
@@ -1099,11 +1192,11 @@ const ShareableMode = {
                         activeUsers = pubsubData[1] || 0;
                     }
 
-                    // Get peer list for this room
-                    const peers = await this.getPeersInRoom(roomName);
+                    // Get peer list for this document
+                    const peers = await this.getPeersInDocument(documentName);
 
                     // Track peer changes to update activity timestamp
-                    const previousPeers = this.roomPeers[roomName] || new Set();
+                    const previousPeers = this.documentPeers[documentName] || new Set();
                     const currentPeersSet = new Set(peers);
 
                     // Check if peers changed (joined or left)
@@ -1112,61 +1205,61 @@ const ShareableMode = {
                         [...previousPeers].some(p => !currentPeersSet.has(p));
 
                     if (peersChanged) {
-                        this.roomActivity[roomName] = Date.now();
-                        this.roomPeers[roomName] = currentPeersSet;
+                        this.documentActivity[documentName] = Date.now();
+                        this.documentPeers[documentName] = currentPeersSet;
                     }
 
-                    // Ensure room has an activity timestamp (default to 0 for new rooms)
-                    if (!this.roomActivity[roomName]) {
-                        this.roomActivity[roomName] = 0;
+                    // Ensure document has an activity timestamp (default to 0 for new documents)
+                    if (!this.documentActivity[documentName]) {
+                        this.documentActivity[documentName] = 0;
                     }
 
                     return {
-                        roomName,
+                        documentName,
                         activeUsers,
                         peers,
-                        lastActivity: this.roomActivity[roomName]
+                        lastActivity: this.documentActivity[documentName]
                     };
                 })
             );
 
             // Sort by most recent activity (newest first)
-            this.roomList = roomsWithUsers.sort((a, b) => b.lastActivity - a.lastActivity);
-            this.updateRoomListUI();
+            this.documentList = documentsWithUsers.sort((a, b) => b.lastActivity - a.lastActivity);
+            this.updateDocumentListUI();
 
         } catch (error) {
-            EditorCore.log(`Error refreshing room list: ${error.message}`, 'error');
+            EditorCore.log(`Error refreshing document list: ${error.message}`, 'error');
         }
     },
 
     /**
-     * Update the room list UI
+     * Update the document list UI
      */
-    updateRoomListUI() {
-        const listDiv = document.getElementById('room-list');
+    updateDocumentListUI() {
+        const listDiv = document.getElementById('document-list');
 
-        if (this.roomList.length === 0) {
-            listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No rooms available. Create one to get started!</div>';
+        if (this.documentList.length === 0) {
+            listDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No documents available. Create one to get started!</div>';
             return;
         }
 
-        listDiv.innerHTML = this.roomList.map(({ roomName, activeUsers, peers }) => {
+        listDiv.innerHTML = this.documentList.map(({ documentName, activeUsers, peers }) => {
             const userClass = activeUsers > 0 ? 'active' : '';
             const userText = activeUsers === 1 ? '1 user' : `${activeUsers} users`;
 
-            // Show peers if this is the current room
-            const isCurrentRoom = this.currentRoom === roomName;
-            const peerListHtml = isCurrentRoom && peers && peers.length > 0
+            // Show peers if this is the current document
+            const isCurrentDocument = this.currentDocument === documentName;
+            const peerListHtml = isCurrentDocument && peers && peers.length > 0
                 ? `<div class="peer-list">${peers.map(peerId =>
                     `<div class="peer-item">${peerId.slice(0, 8)}</div>`
                   ).join('')}</div>`
                 : '';
 
             return `
-                <div class="room-item-container ${isCurrentRoom ? 'current-room' : ''}">
-                    <div class="room-item" onclick="ShareableMode.joinRoom('${roomName}')">
-                        <span class="room-name">${roomName}</span>
-                        <span class="room-users ${userClass}">${userText}</span>
+                <div class="document-item-container ${isCurrentDocument ? 'current-document' : ''}">
+                    <div class="document-item" onclick="ShareableMode.joinDocument('${documentName}')">
+                        <span class="document-name">${documentName}</span>
+                        <span class="document-users ${userClass}">${userText}</span>
                     </div>
                     ${peerListHtml}
                 </div>
@@ -1175,19 +1268,19 @@ const ShareableMode = {
     },
 
     /**
-     * Subscribe to room creation/deletion events
+     * Subscribe to document creation/deletion events
      */
-    subscribeToRoomEvents() {
-        const pattern = '__keyspace@0__:am:room:*';
+    subscribeToDocumentEvents() {
+        const pattern = '__keyspace@0__:am:document:*';
 
-        this.roomListSocket = new WebSocket(`${EditorCore.WEBDIS_WS_URL}/.json`);
+        this.documentListSocket = new WebSocket(`${EditorCore.WEBDIS_WS_URL}/.json`);
 
-        this.roomListSocket.onopen = () => {
-            EditorCore.log('Room list WebSocket connected', 'shareable');
-            this.roomListSocket.send(JSON.stringify(['PSUBSCRIBE', pattern]));
+        this.documentListSocket.onopen = () => {
+            EditorCore.log('Document list WebSocket connected', 'shareable');
+            this.documentListSocket.send(JSON.stringify(['PSUBSCRIBE', pattern]));
         };
 
-        this.roomListSocket.onmessage = async (event) => {
+        this.documentListSocket.onmessage = async (event) => {
             try {
                 const response = JSON.parse(event.data);
 
@@ -1198,31 +1291,31 @@ const ShareableMode = {
                         EditorCore.log(`Subscribed to pattern: ${data[1]}`, 'shareable');
                     } else if (data[0] === 'pmessage') {
                         const command = data[3];
-                        EditorCore.log(`Room event detected: ${command}`, 'shareable');
-                        // Refresh room list when rooms are created or deleted
+                        EditorCore.log(`Document event detected: ${command}`, 'shareable');
+                        // Refresh document list when documents are created or deleted
                         if (command === 'am.new' || command === 'del') {
-                            await this.refreshRoomList();
+                            await this.refreshDocumentList();
                         }
                     }
                 }
             } catch (error) {
-                EditorCore.log(`Room list WebSocket error: ${error.message}`, 'error');
+                EditorCore.log(`Document list WebSocket error: ${error.message}`, 'error');
             }
         };
 
-        this.roomListSocket.onerror = (error) => {
-            EditorCore.log('Room list WebSocket error', 'error');
+        this.documentListSocket.onerror = (error) => {
+            EditorCore.log('Document list WebSocket error', 'error');
         };
 
-        this.roomListSocket.onclose = () => {
-            EditorCore.log('Room list WebSocket closed', 'shareable');
+        this.documentListSocket.onclose = () => {
+            EditorCore.log('Document list WebSocket closed', 'shareable');
         };
     },
 
     /**
-     * Start periodic room list refresh with smart debouncing
+     * Start periodic document list refresh with smart debouncing
      */
-    startRoomListRefresh() {
+    startDocumentListRefresh() {
         let lastRefresh = Date.now();
         const minInterval = 2000; // Minimum 2 seconds between refreshes
 
@@ -1230,32 +1323,32 @@ const ShareableMode = {
         this.refreshInterval = setInterval(async () => {
             const now = Date.now();
             if (now - lastRefresh >= minInterval) {
-                await this.refreshRoomList();
+                await this.refreshDocumentList();
                 lastRefresh = now;
             }
         }, 5000);
     },
 
     /**
-     * Trigger an immediate room list refresh (debounced)
+     * Trigger an immediate document list refresh (debounced)
      */
-    async triggerRoomListRefresh() {
+    async triggerDocumentListRefresh() {
         // Debounce rapid calls
         clearTimeout(this._refreshDebounce);
         this._refreshDebounce = setTimeout(async () => {
-            await this.refreshRoomList();
+            await this.refreshDocumentList();
         }, 500);
     },
 
     /**
-     * Announce presence in a room
+     * Announce presence in a document
      */
-    async announcePresence(roomName) {
+    async announcePresence(documentName) {
         try {
-            const presenceKey = `presence:${roomName}`;
+            const presenceKey = `presence:${documentName}`;
             // Use Redis SET with expiration to track presence
             await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${this.peerId}/10/${this.peerId}`);
-            EditorCore.log(`Announced presence in ${roomName}`, 'shareable');
+            EditorCore.log(`Announced presence in ${documentName}`, 'shareable');
         } catch (error) {
             EditorCore.log(`Error announcing presence: ${error.message}`, 'error');
         }
@@ -1264,21 +1357,21 @@ const ShareableMode = {
     /**
      * Start heartbeat to maintain presence
      */
-    startHeartbeat(roomName) {
+    startHeartbeat(documentName) {
         // Announce presence every 5 seconds
         this.heartbeatInterval = setInterval(async () => {
-            if (this.currentRoom === roomName) {
-                await this.announcePresence(roomName);
+            if (this.currentDocument === documentName) {
+                await this.announcePresence(documentName);
             }
         }, 5000);
     },
 
     /**
-     * Get peers in a room
+     * Get peers in a document
      */
-    async getPeersInRoom(roomName) {
+    async getPeersInDocument(documentName) {
         try {
-            const pattern = `presence:${roomName}:*`;
+            const pattern = `presence:${documentName}:*`;
             const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/${pattern}`);
             const data = await response.json();
 
@@ -1295,165 +1388,15 @@ const ShareableMode = {
 // Make ShareableMode globally available
 window.ShareableMode = ShareableMode;
 
-// Use EditorCore constants
-const WEBDIS_URL = EditorCore.WEBDIS_URL;
-const WEBDIS_WS_URL = EditorCore.WEBDIS_WS_URL;
-const SYNC_CHANNEL = 'automerge:sync';
-
-// Editor state
-let leftDoc = null;
-let rightDoc = null;
-let leftPeerId = EditorCore.generatePeerId();
-let rightPeerId = EditorCore.generatePeerId();
-let isConnected = false;
-let isSyncing = false;
-
-// WebSocket connections for pub/sub
-let leftSocket = null;
-let rightSocket = null;
-
-// Track previous text state for calculating diffs
-let leftPrevText = '';
-let rightPrevText = '';
-
-// Track if we're actively editing
-let leftIsEditing = false;
-let rightIsEditing = false;
-
-/**
- * Generate a unique peer ID for this editor instance.
- * Used to identify which peer made changes and to filter out our own messages.
- * @returns {string} A unique peer ID string
- */
-function generatePeerId() {
-    return 'peer-' + Math.random().toString(36).substring(2, 15);
-}
-
-// Initialize
-window.addEventListener('load', async () => {
-    log('Collaborative editor loaded', 'server');
-
-    // Check if Automerge loaded
-    if (typeof Automerge === 'undefined') {
-        log('ERROR: Automerge library failed to load!', 'error');
-    } else {
-        log('Automerge library ready', 'server');
-    }
-
-    // Check connection
-    const connected = await EditorCore.checkConnection();
-    updateConnectionStatus(connected);
-
-    // Initialize ShareableMode
-    await ShareableMode.initialize();
-
-    // Set peer IDs for dual mode
-    document.getElementById('peer-id-left').textContent = `Peer ID: ${leftPeerId.slice(0, 8)}`;
-    document.getElementById('peer-id-right').textContent = `Peer ID: ${rightPeerId.slice(0, 8)}`;
-
-    // Set up editor event listeners
-    const leftEditor = document.getElementById('editor-left');
-    const rightEditor = document.getElementById('editor-right');
-
-    leftEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('left'), 300));
-    rightEditor.addEventListener('input', EditorCore.debounce(() => handleEdit('right'), 300));
-
-    // Update editors when they lose focus (to sync any pending changes)
-    leftEditor.addEventListener('blur', () => {
-        log('[left] Editor lost focus - syncing any pending changes', 'left');
-        updateEditor('left');
-    });
-    rightEditor.addEventListener('blur', () => {
-        log('[right] Editor lost focus - syncing any pending changes', 'right');
-        updateEditor('right');
-    });
-
-    // Check connection periodically
-    setInterval(checkConnection, 5000);
-});
-
-/**
- * Debounce function to limit how often a function can be called.
- * Used to delay processing of editor input events until typing pauses.
- * @param {Function} func - The function to debounce
- * @param {number} wait - Milliseconds to wait before calling func
- * @returns {Function} Debounced version of func
- */
-function debounce(func, wait) {
-    let timeout;
-    return function executedFunction(...args) {
-        const later = () => {
-            clearTimeout(timeout);
-            func(...args);
-        };
-        clearTimeout(timeout);
-        timeout = setTimeout(later, wait);
-    };
-}
-
-/**
- * Calculate the difference between two strings and return splice operation parameters.
- * Finds the common prefix and suffix to determine the minimal change.
- * @param {string} oldText - The previous text
- * @param {string} newText - The new text
- * @returns {Object|null} Object with {pos, del, text} or null if no change
- */
-function calculateSplice(oldText, newText) {
-    // Find common prefix
-    let prefixLen = 0;
-    const minLen = Math.min(oldText.length, newText.length);
-    while (prefixLen < minLen && oldText[prefixLen] === newText[prefixLen]) {
-        prefixLen++;
-    }
-
-    // Find common suffix
-    let suffixLen = 0;
-    const oldEnd = oldText.length;
-    const newEnd = newText.length;
-    while (suffixLen < minLen - prefixLen &&
-           oldText[oldEnd - suffixLen - 1] === newText[newEnd - suffixLen - 1]) {
-        suffixLen++;
-    }
-
-    // Calculate splice parameters
-    const pos = prefixLen;
-    const del = oldEnd - prefixLen - suffixLen;
-    const text = newText.substring(prefixLen, newEnd - suffixLen);
-
-    // No change if nothing was deleted and nothing was inserted
-    if (del === 0 && text.length === 0) {
-        return null;
-    }
-
-    return { pos, del, text };
-}
-
-/**
- * Append a log message to the sync log display.
- * Used throughout the app to show sync events, errors, and status changes.
- * @param {string} message - The message to log
- * @param {string} source - Source of the message (server, left, right, error)
- */
+// Utility functions for sync log
 function log(message, source = 'server') {
-    const logDiv = document.getElementById('sync-log');
-    const timestamp = new Date().toLocaleTimeString();
-    const className = `log-${source}`;
-    logDiv.innerHTML += `<span class="${className}">[${timestamp}] [${source.toUpperCase()}] ${message}</span>\n`;
-    logDiv.scrollTop = logDiv.scrollHeight;
+    EditorCore.log(message, source);
 }
 
-/**
- * Clear all messages from the sync log display.
- * Called when user clicks the "Clear" button.
- */
 function clearLog() {
     document.getElementById('sync-log').innerHTML = '';
 }
 
-/**
- * Select all text in the sync log display.
- * Called when user clicks the "Select All" button.
- */
 function selectAllLog() {
     const logDiv = document.getElementById('sync-log');
     const range = document.createRange();
@@ -1463,601 +1406,27 @@ function selectAllLog() {
     selection.addRange(range);
 }
 
-/**
- * Check if Webdis/Redis is reachable by sending a PING command.
- * Called on page load and periodically every 5 seconds.
- * Updates the connection status indicator.
- */
-async function checkConnection() {
-    try {
-        const response = await fetch(`${WEBDIS_URL}/PING`);
-        const data = await response.json();
-        const connected = data.PING === 'PONG' || data.PING === true || (Array.isArray(data.PING) && data.PING[1] === 'PONG');
-        updateConnectionStatus(connected);
-    } catch (error) {
-        updateConnectionStatus(false);
-    }
-}
+// Initialize
+window.addEventListener('load', async () => {
+    EditorCore.log('Collaborative editor loaded', 'server');
 
-/**
- * Update the UI connection status indicator.
- * Stops sync if connection is lost.
- * @param {boolean} connected - Whether Redis is connected
- */
-function updateConnectionStatus(connected) {
-    const status = document.getElementById('connection-status');
-    const statusShareableEditor = document.getElementById('connection-status-shareable-editor');
-    isConnected = connected;
-    if (connected) {
-        status.textContent = 'Connected';
-        status.className = 'status-connected';
-        if (statusShareableEditor) {
-            statusShareableEditor.textContent = 'Connected';
-            statusShareableEditor.className = 'status-connected';
-        }
-    } else {
-        status.textContent = 'Disconnected';
-        status.className = 'status-disconnected';
-        if (statusShareableEditor) {
-            statusShareableEditor.textContent = 'Disconnected';
-            statusShareableEditor.className = 'status-disconnected';
-        }
-        if (isSyncing) {
-            stopSync();
-        }
-    }
-}
-
-/**
- * Initialize a new Automerge document.
- * Creates empty documents for both editors and stores initial state in Redis.
- * Called when user clicks "Create New Document" button.
- */
-async function initializeDocument() {
-    const docKey = document.getElementById('doc-key').value;
-    if (!docKey) {
-        alert('Please enter a document key');
-        return;
-    }
-
+    // Check if Automerge loaded
     if (typeof Automerge === 'undefined') {
-        alert('Automerge library is not loaded. Please refresh the page.');
-        log('Automerge not loaded', 'error');
-        return;
-    }
-
-    log(`Initializing document: ${docKey}`, 'server');
-
-    // Create ONE Automerge document and save it to Redis
-    // Editors will load from Redis when they connect (Approach B)
-    const baseDoc = Automerge.init();
-    const initialDoc = Automerge.change(baseDoc, doc => {
-        doc.text = '';
-    });
-
-    // Create server document (single source of truth)
-    try {
-        // Create the document in Redis using AM.NEW (starts empty)
-        const newResponse = await fetch(`${WEBDIS_URL}/AM.NEW/${docKey}`);
-        const newData = await newResponse.json();
-        log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
-
-        // Initialize the text field with empty string so AM.SPLICETEXT can work
-        // Use GET with empty string parameter since Webdis PUT doesn't handle empty body well
-        const initResponse = await fetch(`${WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/`);
-        const initData = await initResponse.json();
-        log(`Text field initialized: ${JSON.stringify(initData)}`, 'server');
-
-        log('Server document created successfully', 'server');
-        log('Click "Connect Editors" to load and start syncing', 'server');
-    } catch (error) {
-        log(`Error initializing document: ${error.message}`, 'error');
-    }
-}
-
-/**
- * Connect both editors to the shared document and start syncing.
- * Loads existing document from Redis (if available) and sets up WebSocket subscriptions.
- * Called when user clicks "Connect Editors" button.
- */
-async function connectEditors() {
-    const docKey = document.getElementById('doc-key').value;
-    if (!docKey) {
-        alert('Please enter a document key');
-        return;
-    }
-
-    if (!isConnected) {
-        alert('Not connected to Redis. Please check connection.');
-        return;
-    }
-
-    log(`Connecting editors to document: ${docKey}`, 'server');
-
-    // ALWAYS load initial state from Redis (Approach B - single source of truth)
-    try {
-        const loaded = await loadFromRedis(docKey);
-        if (!loaded) {
-            alert('No document found in Redis. Please create a new document first.');
-            log('Connection failed: Document not found in Redis', 'error');
-            return;
-        }
-    } catch (error) {
-        alert(`Failed to load document: ${error.message}`);
-        log(`Connection failed: ${error.message}`, 'error');
-        return;
-    }
-
-    // Set up WebSocket-based subscriptions
-    setupWebSocket('left', docKey);
-    setupWebSocket('right', docKey);
-
-    isSyncing = true;
-    document.getElementById('sync-status').textContent = 'Syncing ✓';
-    log('Editors connected with WebSocket-based sync', 'server');
-}
-
-/**
- * Set up WebSocket connection for real-time pub/sub synchronization.
- * Subscribes to the document's sync channel and handles incoming change messages.
- * Automatically reconnects if connection is lost.
- * @param {string} editor - Which editor ('left' or 'right')
- * @param {string} docKey - The document key to subscribe to
- */
-function setupWebSocket(editor, docKey) {
-    const channel = `changes:${docKey}`;
-    const keyspaceChannel = `__keyspace@0__:${docKey}`;
-    const peerId = editor === 'left' ? leftPeerId : rightPeerId;
-
-    // Create WebSocket connection - Webdis uses /.json endpoint for WebSocket
-    const ws = new WebSocket(`${WEBDIS_WS_URL}/.json`);
-
-    ws.onopen = () => {
-        log(`[${editor}] WebSocket connected`, editor);
-
-        // Subscribe to the changes channel (for server-published changes)
-        const subscribeCmd = JSON.stringify(['SUBSCRIBE', channel]);
-        ws.send(subscribeCmd);
-        log(`[${editor}] Subscribed to ${channel}`, editor);
-
-        // Subscribe to keyspace notifications (for external changes to the Redis key)
-        const keyspaceCmd = JSON.stringify(['SUBSCRIBE', keyspaceChannel]);
-        ws.send(keyspaceCmd);
-        log(`[${editor}] Subscribed to ${keyspaceChannel}`, editor);
-    };
-
-    ws.onmessage = (event) => {
-        try {
-            const response = JSON.parse(event.data);
-
-            if (response.SUBSCRIBE) {
-                const data = response.SUBSCRIBE;
-                if (data[0] === 'subscribe') {
-                    log(`[${editor}] Subscription confirmed for ${data[1]}`, editor);
-                } else if (data[0] === 'message') {
-                    const channelName = data[1];
-                    const messageData = data[2];
-
-                    // Check if this is a keyspace notification or server-published change
-                    if (channelName.startsWith('__keyspace@')) {
-                        // Keyspace notification - external change to the Redis key
-                        log(`[${editor}] Keyspace event: ${messageData}`, editor);
-                        handleKeyspaceNotification(editor, docKey, messageData);
-                    } else {
-                        // Server-published change message
-                        log(`[${editor}] Received pub/sub message`, editor);
-                        handleIncomingMessage(editor, messageData, peerId);
-                    }
-                }
-            } else if (response.MESSAGE) {
-                const data = response.MESSAGE;
-                if (data[0] === 'message') {
-                    const channelName = data[1];
-                    const messageData = data[2];
-
-                    // Check if this is a keyspace notification or regular pub/sub message
-                    if (channelName.startsWith('__keyspace@')) {
-                        // Keyspace notification - external change to the Redis key
-                        log(`[${editor}] Keyspace event: ${messageData}`, editor);
-                        handleKeyspaceNotification(editor, docKey, messageData);
-                    } else {
-                        // Server-published change message
-                        log(`[${editor}] Received pub/sub message`, editor);
-                        handleIncomingMessage(editor, messageData, peerId);
-                    }
-                }
-            } else {
-                log(`[${editor}] Unknown message type: ${JSON.stringify(response)}`, editor);
-            }
-        } catch (error) {
-            log(`[${editor}] WebSocket message error: ${error.message}`, 'error');
-            console.error('WebSocket message error:', error, event.data);
-        }
-    };
-
-    ws.onerror = (error) => {
-        log(`[${editor}] WebSocket error`, 'error');
-        console.error(`[${editor}] WebSocket error:`, error);
-    };
-
-    ws.onclose = (event) => {
-        log(`[${editor}] WebSocket disconnected (code: ${event.code}, reason: ${event.reason})`, editor);
-        console.log(`[${editor}] WebSocket close event:`, event);
-
-        // Attempt to reconnect after 2 seconds
-        if (isSyncing) {
-            setTimeout(() => {
-                log(`[${editor}] Attempting to reconnect...`, editor);
-                setupWebSocket(editor, docKey);
-            }, 2000);
-        }
-    };
-
-    // Store WebSocket reference
-    if (editor === 'left') {
-        leftSocket = ws;
+        EditorCore.log('ERROR: Automerge library failed to load!', 'error');
     } else {
-        rightSocket = ws;
+        EditorCore.log('Automerge library ready', 'server');
     }
-}
 
-/**
- * Handle keyspace notification events from Redis.
- * Note: All changes are already handled via the changes: pub/sub channel
- * This is kept for potential future use (e.g., detecting external deletions)
- * @param {string} editor - Which editor ('left' or 'right')
- * @param {string} docKey - The document key
- * @param {string} command - The Redis command that triggered the notification (e.g., "am.splicetext")
- */
-async function handleKeyspaceNotification(editor, docKey, command) {
-    log(`[${editor}] Keyspace notification: ${command} on ${docKey}`, editor);
-    // No action needed - all changes come via pub/sub channel
-}
-
-/**
- * Handle incoming change messages from Redis pub/sub via WebSocket.
- * Decodes the base64-encoded change bytes from the server and applies them to the local document.
- * @param {string} editor - Which editor ('left' or 'right')
- * @param {string} messageData - Base64-encoded change bytes from server
- * @param {string} myPeerId - This peer's ID (not used anymore, kept for compatibility)
- */
-function handleIncomingMessage(editor, messageData, myPeerId) {
-    try {
-        // Decode the change bytes from base64 (server publishes raw change bytes)
-        const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
-
-        // Get current document
-        const currentDoc = editor === 'left' ? leftDoc : rightDoc;
-
-        // Apply the change to the current document
-        const [newDoc] = Automerge.applyChanges(currentDoc, [changeBytes]);
-
-        // Update the document reference
-        if (editor === 'left') {
-            leftDoc = newDoc;
-        } else {
-            rightDoc = newDoc;
+    // Check connection
+    const connected = await EditorCore.checkConnection();
+    if (connected) {
+        const statusElement = document.getElementById('connection-status-shareable-editor');
+        if (statusElement) {
+            statusElement.textContent = 'Connected';
+            statusElement.className = 'status-connected';
         }
-
-        // Update the editor UI
-        updateEditor(editor);
-        updateDocInfo(editor);
-
-    } catch (error) {
-        log(`[${editor}] Error applying change: ${error.message}`, 'error');
-        console.error('Error handling message:', error);
-    }
-}
-
-/**
- * Stop synchronization and close all WebSocket connections.
- * Called when connection is lost or user manually stops sync.
- */
-function stopSync() {
-    if (leftSocket) {
-        leftSocket.close();
-        leftSocket = null;
-    }
-    if (rightSocket) {
-        rightSocket.close();
-        rightSocket = null;
-    }
-    isSyncing = false;
-    document.getElementById('sync-status').textContent = 'Not syncing';
-    log('Sync stopped', 'server');
-}
-
-/**
- * Handle local editor changes and sync to server.
- * Calculates the minimal diff and applies to server via AM.SPLICETEXT.
- * Server automatically publishes changes to the changes:{key} channel.
- * Debounced to avoid excessive updates during rapid typing.
- * Preserves cursor position by tracking change location.
- * @param {string} editor - Which editor ('left' or 'right')
- */
-async function handleEdit(editor) {
-    if (!isSyncing) return;
-
-    const docKey = document.getElementById('doc-key').value;
-    const textarea = document.getElementById(`editor-${editor}`);
-    const newText = textarea.value;
-
-    // Get previous text for this editor
-    const oldText = editor === 'left' ? leftPrevText : rightPrevText;
-
-    // Calculate the minimal splice operation
-    const splice = EditorCore.calculateSplice(oldText, newText);
-
-    if (!splice) {
-        // No change detected
-        return;
     }
 
-    // Mark that we're actively editing
-    if (editor === 'left') {
-        leftIsEditing = true;
-    } else {
-        rightIsEditing = true;
-    }
-
-    log(`[${editor}] Local edit: pos=${splice.pos}, del=${splice.del}, insert="${splice.text.substring(0, 20)}${splice.text.length > 20 ? '...' : ''}"`, editor);
-
-    // Apply changes to server document via AM.SPLICETEXT
-    // Server will automatically publish changes to the changes:{key} channel
-    await applySpliceToServer(docKey, splice);
-
-    // Only update prevText AFTER we've sent to server
-    // This ensures we track what we actually sent
-    if (editor === 'left') {
-        leftPrevText = newText;
-    } else {
-        rightPrevText = newText;
-    }
-
-    // Clear editing flag after a short delay (to handle echo-back)
-    setTimeout(() => {
-        if (editor === 'left') {
-            leftIsEditing = false;
-        } else {
-            rightIsEditing = false;
-        }
-    }, 100);
-}
-
-/**
- * Apply a splice operation to the server document.
- * Uses AM.SPLICETEXT to apply incremental changes efficiently.
- * Server automatically publishes changes to the changes:{key} channel.
- * @param {string} docKey - The document key
- * @param {Object} splice - The splice operation {pos, del, text}
- */
-async function applySpliceToServer(docKey, splice) {
-    try {
-        let response;
-        if (splice.text === '') {
-            // Webdis doesn't send empty PUT body as an argument to Redis
-            // Use GET with trailing slash for empty string (deletions)
-            const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}/`;
-            response = await fetch(url);
-        } else {
-            // For insertions/replacements, use PUT with text in body
-            const url = `${WEBDIS_URL}/AM.SPLICETEXT/${docKey}/text/${splice.pos}/${splice.del}`;
-            response = await fetch(url, {
-                method: 'PUT',
-                headers: {
-                    'Content-Type': 'text/plain'
-                },
-                body: splice.text
-            });
-        }
-
-        const data = await response.json();
-
-        if (data['AM.SPLICETEXT'] && (data['AM.SPLICETEXT'] === 'OK' || data['AM.SPLICETEXT'][0] === true)) {
-            // Success
-        } else {
-            log(`AM.SPLICETEXT error: ${JSON.stringify(data)}`, 'error');
-        }
-    } catch (error) {
-        log(`Error applying splice to server: ${error.message}`, 'error');
-        console.error('Server splice error:', error);
-    }
-}
-
-/**
- * Initialize client documents from server.
- * Loads the authoritative document from Redis using AM.SAVE so all clients share the same document history.
- * Use .raw endpoint because Webdis .json endpoint can't handle binary data.
- * @param {string} docKey - The document key to load
- * @returns {boolean} True if initialization successful
- */
-async function loadFromRedis(docKey) {
-    try {
-        // Load the document from Redis to ensure all clients share the same document history
-        // Use .raw endpoint because Webdis .json endpoint can't handle binary data
-        const response = await fetch(`${WEBDIS_URL}/AM.SAVE/${docKey}.raw`);
-
-        if (response.ok) {
-            // Get raw binary data as ArrayBuffer
-            const arrayBuffer = await response.arrayBuffer();
-            const docBytes = new Uint8Array(arrayBuffer);
-
-            // Webdis .raw returns Redis protocol format: $NNN\r\n<data>\r\n
-            // Parse the bulk string header to get exact byte count
-            const decoder = new TextDecoder('utf-8');
-            let headerEnd = 0;
-            for (let i = 0; i < docBytes.length - 1; i++) {
-                if (docBytes[i] === 0x0d && docBytes[i + 1] === 0x0a) {
-                    headerEnd = i;
-                    break;
-                }
-            }
-
-            // Extract byte count from header: $518\r\n -> "518"
-            const headerText = decoder.decode(docBytes.slice(1, headerEnd));
-            const byteCount = parseInt(headerText, 10);
-            const dataStart = headerEnd + 2; // Skip past \r\n
-
-            // Extract exactly byteCount bytes (ignore trailing \r\n)
-            const actualDocBytes = docBytes.slice(dataStart, dataStart + byteCount);
-
-            // Both editors load the same document from server
-            leftDoc = Automerge.load(actualDocBytes);
-            rightDoc = Automerge.load(actualDocBytes);
-
-            log(`Loaded document from server (${actualDocBytes.length} bytes, ${docBytes.length - actualDocBytes.length} header bytes)`, 'server');
-        } else {
-            log(`Failed to load document from server: ${response.status}`, 'error');
-            return false;
-        }
-
-        // Initialize previous text state for diff tracking
-        // Convert Automerge Text objects to plain strings
-        leftPrevText = leftDoc.text ? leftDoc.text.toString() : '';
-        rightPrevText = rightDoc.text ? rightDoc.text.toString() : '';
-
-        updateEditor('left');
-        updateEditor('right');
-        updateDocInfo('left');
-        updateDocInfo('right');
-
-        log('Editors initialized from server document', 'server');
-        return true;
-    } catch (error) {
-        log(`Error initializing editors: ${error.message}`, 'error');
-        console.error('Load error:', error);
-        throw error;
-    }
-}
-
-/**
- * Update the editor textarea to reflect the current document state.
- * Intelligently preserves cursor position by calculating the splice that was applied.
- * Called after applying remote changes or loading document.
- * @param {string} editor - Which editor ('left' or 'right')
- */
-function updateEditor(editor) {
-    const doc = editor === 'left' ? leftDoc : rightDoc;
-    if (!doc) return;
-
-    const textarea = document.getElementById(`editor-${editor}`);
-    const isEditing = editor === 'left' ? leftIsEditing : rightIsEditing;
-
-    // Only skip if we're actively making local edits
-    // Always apply changes from other editors
-    if (isEditing && document.activeElement === textarea) {
-        log(`[${editor}] Skipping update - locally editing`, editor);
-        return;
-    }
-
-    const currentText = textarea.value;
-    // Convert Automerge Text object to plain string
-    const newText = doc.text ? doc.text.toString() : '';
-    const cursorPos = textarea.selectionStart;
-    const cursorEnd = textarea.selectionEnd;
-
-    // Only update if text differs
-    if (newText !== currentText) {
-        // Calculate the splice to determine cursor adjustment
-        const splice = EditorCore.calculateSplice(currentText, newText);
-
-        textarea.value = newText;
-
-        if (splice) {
-            // Adjust cursor position based on the splice operation
-            let newCursorPos = cursorPos;
-            let newCursorEnd = cursorEnd;
-
-            // Only adjust cursor if textarea is focused
-            if (document.activeElement === textarea && cursorPos >= splice.pos) {
-                // Calculate net change in text length
-                const netChange = splice.text.length - splice.del;
-
-                if (cursorPos <= splice.pos + splice.del) {
-                    // Cursor was inside the deleted range, move it to end of insertion
-                    newCursorPos = splice.pos + splice.text.length;
-                } else {
-                    // Cursor was after the deleted range, shift by net change
-                    newCursorPos = cursorPos + netChange;
-                }
-
-                // Adjust selection end similarly
-                if (cursorEnd <= splice.pos + splice.del) {
-                    newCursorEnd = splice.pos + splice.text.length;
-                } else {
-                    newCursorEnd = cursorEnd + netChange;
-                }
-            }
-
-            // Ensure cursor positions are within valid range
-            newCursorPos = Math.max(0, Math.min(newCursorPos, newText.length));
-            newCursorEnd = Math.max(0, Math.min(newCursorEnd, newText.length));
-
-            // Only set selection if textarea is focused
-            if (document.activeElement === textarea) {
-                textarea.setSelectionRange(newCursorPos, newCursorEnd);
-            }
-        } else {
-            // No splice calculated, try to preserve original position
-            const safePos = Math.min(cursorPos, newText.length);
-            textarea.setSelectionRange(safePos, safePos);
-        }
-
-        // Update previous text state for this editor
-        if (editor === 'left') {
-            leftPrevText = newText;
-        } else {
-            rightPrevText = newText;
-        }
-
-        log(`[${editor}] Editor updated from document`, editor);
-    }
-}
-
-/**
- * Update the document info panel showing stats.
- * Displays character count, number of changes, and peer ID.
- * Called after any document modification.
- * @param {string} editor - Which editor ('left' or 'right')
- */
-function updateDocInfo(editor) {
-    const doc = editor === 'left' ? leftDoc : rightDoc;
-    if (!doc) return;
-
-    const infoDiv = document.getElementById(`info-${editor}`);
-    const history = Automerge.getHistory(doc);
-    // Convert Automerge Text object to plain string for length calculation
-    const textLength = doc.text ? doc.text.toString().length : 0;
-
-    infoDiv.innerHTML = `
-        <div>Characters: ${textLength}</div>
-        <div>Changes: ${history.length}</div>
-        <div>Peer: ${editor === 'left' ? leftPeerId.slice(0, 8) : rightPeerId.slice(0, 8)}</div>
-    `;
-
-    // Update version display
-    document.getElementById(`doc-version-${editor}`).textContent =
-        `${editor === 'left' ? 'Left' : 'Right'}: v${history.length}`;
-}
-
-/**
- * Switch between dual and shareable modes
- * @param {string} mode - 'dual' or 'shareable'
- */
-function switchMode(mode) {
-    // Update tab buttons
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.mode === mode);
-    });
-
-    // Update panels
-    document.getElementById('dual-mode').classList.toggle('active', mode === 'dual');
-    document.getElementById('dual-mode').classList.toggle('hidden', mode !== 'dual');
-    document.getElementById('shareable-mode').classList.toggle('active', mode === 'shareable');
-    document.getElementById('shareable-mode').classList.toggle('hidden', mode !== 'shareable');
-
-    EditorCore.log(`Switched to ${mode} mode`, 'server');
-}
-
-// Make it globally available
-window.switchMode = switchMode;
+    // Initialize ShareableMode
+    await ShareableMode.initialize();
+});

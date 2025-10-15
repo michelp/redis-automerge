@@ -9,113 +9,28 @@
 <body>
     <h1>Redis-Automerge Collaborative Editor</h1>
 
-    <!-- Tab Selector -->
-    <div id="mode-selector" class="tab-container">
-        <button class="tab-btn active" data-mode="dual" onclick="switchMode('dual')">
-            Dual Editor Mode
-        </button>
-        <button class="tab-btn" data-mode="shareable" onclick="switchMode('shareable')">
-            Shareable Link Mode
-        </button>
-    </div>
+    <!-- Shareable Editor Mode Panel -->
+    <div id="shareable-mode" class="mode-panel active">
+        <!-- Left Sidebar: Document List & Management -->
+        <div class="document-sidebar">
+            <h3>Documents</h3>
 
-    <!-- Dual Editor Mode Panel (existing content) -->
-    <div id="dual-mode" class="mode-panel active">
-        <div class="header">
-            <p>Real-time CRDT synchronization with Automerge</p>
-            <div class="controls">
-            <input type="text" id="doc-key" placeholder="Document key" value="collab-doc">
-            <button id="create-btn" onclick="initializeDocument()">Create New Document</button>
-            <button id="connect-btn" onclick="connectEditors()">Connect Editors</button>
-            <button onclick="window.location.href='index.html'">← Back to Main Demo</button>
-        </div>
-        <div class="status-bar">
-            <span id="connection-status" class="status-disconnected">Disconnected</span>
-            <span id="sync-status">Not syncing</span>
-            <span id="doc-version-left">Left: v0</span>
-            <span id="doc-version-right">Right: v0</span>
-        </div>
-    </div>
-
-    <div class="editor-container">
-        <div class="editor-pane">
-            <div class="pane-header">
-                <h2>Editor A</h2>
-                <span id="peer-id-left" class="peer-id">Peer ID: ...</span>
-            </div>
-            <div class="editor-wrapper">
-                <textarea id="editor-left" placeholder="Start typing..."></textarea>
-            </div>
-            <div class="info-panel">
-                <h3>Local State</h3>
-                <div id="info-left" class="info-content"></div>
-            </div>
-        </div>
-
-        <div class="sync-indicator">
-            <div class="sync-arrow">⟷</div>
-            <div class="sync-label">Real-time Sync</div>
-        </div>
-
-        <div class="editor-pane">
-            <div class="pane-header">
-                <h2>Editor B</h2>
-                <span id="peer-id-right" class="peer-id">Peer ID: ...</span>
-            </div>
-            <div class="editor-wrapper">
-                <textarea id="editor-right" placeholder="Start typing..."></textarea>
-            </div>
-            <div class="info-panel">
-                <h3>Local State</h3>
-                <div id="info-right" class="info-content"></div>
-            </div>
-        </div>
-    </div>
-
-    <div class="log-container">
-        <div class="log-header">
-            <h3>Sync Log</h3>
-            <button onclick="selectAllLog()">Select All</button>
-            <button onclick="clearLog()">Clear</button>
-        </div>
-        <div id="sync-log" class="sync-log"></div>
-    </div>
-
-    <div class="instructions">
-            <h3>How It Works</h3>
-            <ol>
-                <li><strong>Create Document:</strong> Initialize a new Automerge document in Redis</li>
-                <li><strong>Connect Editors:</strong> Both editors sync with Redis and subscribe to changes</li>
-                <li><strong>Type in Either Editor:</strong> Changes are automatically synced via Redis Pub/Sub</li>
-                <li><strong>Local-First:</strong> Each editor maintains its own Automerge document copy</li>
-                <li><strong>Conflict Resolution:</strong> Automerge CRDT handles concurrent edits automatically</li>
-            </ol>
-            <p><strong>Try it:</strong> Type in both editors simultaneously to see conflict-free merging in action!</p>
-        </div>
-    </div>
-
-    <!-- Shareable Editor Mode Panel (new) -->
-    <div id="shareable-mode" class="mode-panel hidden">
-        <!-- Left Sidebar: Room List & Management -->
-        <div class="room-sidebar">
-            <h3>Rooms</h3>
-
-            <div class="room-list-container">
-                <div id="room-list" class="room-list">
+            <div class="document-list-container">
+                <div id="document-list" class="document-list">
                     <!-- Dynamically populated -->
                 </div>
             </div>
 
-            <div class="room-management">
-                <h4>Create Room</h4>
-                <button onclick="ShareableMode.createRandomRoom()">
-                    🎲 Random Room
+            <div class="document-management">
+                <h4>Create Document</h4>
+                <button onclick="ShareableMode.createRandomDocument()">
+                    🎲 Random Document
                 </button>
-                <input id="custom-room-name" type="text" placeholder="Custom room name">
-                <button onclick="ShareableMode.createCustomRoom()">
+                <input id="custom-document-name" type="text" placeholder="Custom document name">
+                <button onclick="ShareableMode.createCustomDocument()">
                     ✏️ Create Custom
                 </button>
-                <button onclick="ShareableMode.refreshRoomList()" style="background: #10b981;">
+                <button onclick="ShareableMode.refreshDocumentList()" style="background: #10b981;">
                     🔄 Refresh List
                 </button>
             </div>
@@ -124,8 +39,8 @@
         <!-- Center: Editor -->
         <div id="editor-container-shareable" class="editor-main">
             <div class="editor-toolbar">
-                <div class="room-info">
-                    <span>Room: <strong id="current-room-name">Not connected</strong></span>
+                <div class="document-info">
+                    <span>Document: <strong id="current-document-name">Not connected</strong></span>
                     <span id="peer-id-shareable" class="peer-id"></span>
                 </div>
                 <div class="toolbar-actions">
@@ -136,7 +51,7 @@
             </div>
 
             <div class="editor-content">
-                <textarea id="editor-shareable" placeholder="Select a room or create a new one to start editing..."></textarea>
+                <textarea id="editor-shareable" placeholder="Select a document or create a new one to start editing..."></textarea>
                 <div class="editor-status-footer">
                     <span id="connection-status-shareable-editor" class="status-disconnected">Disconnected</span>
                     <span id="sync-status-shareable-editor">Not syncing</span>
@@ -156,8 +71,18 @@
         </div>
     </div>
 
-    <!-- Use Automerge from CDN - Using the stable 1.x version for browser compatibility -->
-    <script src="https://cdn.jsdelivr.net/npm/automerge@1.0.1-preview.7/dist/automerge.js"></script>
+    <!-- Sync Log -->
+    <div class="log-container">
+        <div class="log-header">
+            <h3>Sync Log</h3>
+            <button onclick="selectAllLog()">Select All</button>
+            <button onclick="clearLog()">Clear</button>
+        </div>
+        <div id="sync-log" class="sync-log"></div>
+    </div>
+
+    <!-- Use Automerge 3.1.2 from CDN (matches server's Rust automerge 1.0.0-beta.6) -->
+    <script src="https://cdn.jsdelivr.net/npm/@automerge/automerge@3.1.2/dist/iife/iife.min.js"></script>
     <script src="editor-app.js" defer></script>
 </body>
 </html>

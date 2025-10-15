@@ -1333,7 +1333,7 @@ impl RedisAutomergeClient {
     /// let new_changes = client.get_changes(&[hash]);
     /// assert_eq!(new_changes.len(), 0);
     /// ```
-    pub fn get_changes(&mut self, have_deps: &[ChangeHash]) -> Vec<&Change> {
+    pub fn get_changes(&mut self, have_deps: &[ChangeHash]) -> Vec<Change> {
         self.doc.get_changes(have_deps)
     }
 

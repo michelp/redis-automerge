@@ -379,8 +379,8 @@ textarea:focus {
     display: none;
 }
 
-/* Room sidebar (left) */
-.room-sidebar {
+/* Document sidebar (left) */
+.document-sidebar {
     width: 100%;
     background: #f9fafb;
     border-right: 2px solid #e5e7eb;
@@ -389,7 +389,7 @@ textarea:focus {
     overflow: hidden;
 }
 
-.room-sidebar h3 {
+.document-sidebar h3 {
     padding: 20px;
     margin: 0;
     background: #667eea;
@@ -397,23 +397,23 @@ textarea:focus {
     font-size: 1.1em;
 }
 
-.room-list-container {
+.document-list-container {
     flex: 1;
     overflow-y: auto;
     padding: 10px;
 }
 
-.room-list {
+.document-list {
     display: flex;
     flex-direction: column;
     gap: 5px;
 }
 
-.room-item-container {
+.document-item-container {
     margin-bottom: 5px;
 }
 
-.room-item-container.current-room {
+.document-item-container.current-document {
     background: #f0f4ff;
     border-radius: 6px;
     padding: 5px;
@@ -421,7 +421,7 @@ textarea:focus {
     margin-right: -5px;
 }
 
-.room-item {
+.document-item {
     padding: 12px;
     background: white;
     border: 1px solid #e5e7eb;
@@ -433,7 +433,7 @@ textarea:focus {
     transition: all 0.2s;
 }
 
-.room-item:hover {
+.document-item:hover {
     background: #eff6ff;
     border-color: #667eea;
     transform: translateX(2px);
@@ -458,22 +458,22 @@ textarea:focus {
     margin-right: 5px;
 }
 
-.room-name {
+.document-name {
     font-weight: bold;
     color: #333;
 }
 
-.room-users {
+.document-users {
     color: #666;
     font-size: 14px;
 }
 
-.room-users.active {
+.document-users.active {
     color: #4CAF50;
     font-weight: bold;
 }
 
-.room-management {
+.document-management {
     padding: 15px;
     background: white;
     border-top: 2px solid #e5e7eb;
@@ -482,14 +482,14 @@ textarea:focus {
     gap: 10px;
 }
 
-.room-management h4 {
+.document-management h4 {
     margin: 0 0 10px 0;
     font-size: 0.9em;
     color: #667eea;
     text-transform: uppercase;
 }
 
-.room-management button {
+.document-management button {
     width: 100%;
     padding: 10px;
     background: #667eea;
@@ -502,11 +502,11 @@ textarea:focus {
     transition: background 0.2s;
 }
 
-.room-management button:hover {
+.document-management button:hover {
     background: #5568d3;
 }
 
-.room-management input {
+.document-management input {
     width: 100%;
     padding: 8px;
     border: 1px solid #e5e7eb;
@@ -533,14 +533,14 @@ textarea:focus {
     gap: 10px;
 }
 
-.room-info {
+.document-info {
     display: flex;
     align-items: center;
     gap: 10px;
     font-size: 14px;
 }
 
-.room-info strong {
+.document-info strong {
     color: #667eea;
     font-size: 16px;
 }
