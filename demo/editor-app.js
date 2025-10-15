@@ -240,6 +240,8 @@ const ShareableMode = {
     heartbeatInterval: null,
     isLocallyEditing: false, // Track if we're actively making changes
     _displayedChatCount: 0, // Track how many chat messages have been displayed
+    screenName: null, // User's screen name
+    actorToScreenName: {}, // Map actor IDs to screen names
 
     /**
      * Get the actor ID from the current document
@@ -251,9 +253,70 @@ const ShareableMode = {
     },
 
     /**
+     * Get screen name for an actor ID
+     * @param {string} actorId - The actor ID
+     * @returns {string} Screen name or shortened actor ID if not found
+     */
+    getScreenName(actorId) {
+        if (!actorId) return 'unknown';
+
+        // Check if we have a screen name mapping
+        if (this.actorToScreenName[actorId]) {
+            return this.actorToScreenName[actorId];
+        }
+
+        // Check if it's in the document metadata
+        if (this.doc && this.doc.user_metadata && this.doc.user_metadata[actorId]) {
+            return this.doc.user_metadata[actorId].screenName || actorId.slice(0, 8);
+        }
+
+        // Fall back to shortened actor ID
+        return actorId.slice(0, 8);
+    },
+
+    /**
      * Initialize shareable mode
      */
     async initialize() {
+        // Check if user is authenticated
+        const authToken = sessionStorage.getItem('authToken');
+        const screenName = sessionStorage.getItem('screenName');
+        const actorId = sessionStorage.getItem('actorId');
+
+        if (!authToken || !screenName || !actorId) {
+            // Not authenticated - redirect to landing page
+            const urlDocument = this.parseUrlDocument();
+            if (urlDocument) {
+                window.location.href = `index.html?document=${encodeURIComponent(urlDocument)}`;
+            } else {
+                window.location.href = 'index.html';
+            }
+            return;
+        }
+
+        // Verify token is still valid
+        const verification = await Auth.verify(authToken);
+        if (!verification.valid) {
+            // Token invalid - clean up and redirect
+            sessionStorage.removeItem('authToken');
+            sessionStorage.removeItem('screenName');
+            sessionStorage.removeItem('actorId');
+            const urlDocument = this.parseUrlDocument();
+            if (urlDocument) {
+                window.location.href = `index.html?document=${encodeURIComponent(urlDocument)}`;
+            } else {
+                window.location.href = 'index.html';
+            }
+            return;
+        }
+
+        // Store user credentials
+        this.screenName = screenName;
+        this.stableActorId = actorId;
+        this.authToken = authToken;
+
+        EditorCore.log(`Logged in as: ${this.screenName} (actor: ${this.stableActorId.slice(0, 8)}...)`, 'shareable');
+
         // Check for document in URL
         const urlDocument = this.parseUrlDocument();
         if (urlDocument) {
@@ -435,7 +498,8 @@ const ShareableMode = {
                 // Extract exactly byteCount bytes (ignore trailing \r\n)
                 const actualDocBytes = docBytes.slice(dataStart, dataStart + byteCount);
 
-                this.doc = Automerge.load(actualDocBytes);
+                // Load document with our stable actor ID
+                this.doc = Automerge.load(actualDocBytes, { actorId: this.stableActorId });
 
                 // Convert Automerge Text object to plain string
                 const textValue = this.doc.text ? this.doc.text.toString() : '';
@@ -444,7 +508,8 @@ const ShareableMode = {
             } else {
                 console.error('[ShareableMode] Failed to load document, status:', response.status);
                 EditorCore.log('Failed to load document from server', 'error');
-                const baseDoc = Automerge.init();
+                // Initialize document with our stable actor ID
+                const baseDoc = Automerge.init({ actorId: this.stableActorId });
                 this.doc = Automerge.change(baseDoc, doc => {
                     doc.text = "";
                     doc.chat_history = [];
@@ -454,7 +519,8 @@ const ShareableMode = {
         } catch (error) {
             console.error('[ShareableMode] Error loading document:', error);
             EditorCore.log(`Error loading document: ${error.message}`, 'error');
-            const baseDoc = Automerge.init();
+            // Initialize document with our stable actor ID
+            const baseDoc = Automerge.init({ actorId: this.stableActorId });
             this.doc = Automerge.change(baseDoc, doc => {
                 doc.text = "";
                 doc.chat_history = [];
@@ -462,9 +528,50 @@ const ShareableMode = {
             this.prevText = '';
         }
 
+        // Get actor ID
+        const actorId = this.getActorId();
+
+        // Load existing screen name mappings from document metadata
+        if (this.doc.user_metadata) {
+            for (const [actId, metadata] of Object.entries(this.doc.user_metadata)) {
+                if (metadata.screenName) {
+                    this.actorToScreenName[actId] = metadata.screenName;
+                }
+            }
+        }
+
+        // Store screen name in document metadata
+        // Server has already validated uniqueness during registration
+        const oldDoc = this.doc;
+        const newDoc = Automerge.change(oldDoc, doc => {
+            if (!doc.user_metadata) {
+                doc.user_metadata = {};
+            }
+            if (!doc.user_metadata[actorId] || doc.user_metadata[actorId].screenName !== this.screenName) {
+                doc.user_metadata[actorId] = {
+                    screenName: this.screenName,
+                    lastSeen: Date.now()
+                };
+            }
+        });
+
+        // Get the changes
+        const metadataChanges = Automerge.getChanges(oldDoc, newDoc);
+
+        // Update local document
+        this.doc = newDoc;
+
+        // Send metadata changes to server if any
+        if (metadataChanges.length > 0) {
+            await this.applyChangesToServer(docKey, metadataChanges);
+        }
+
+        // Update our local mapping with our own screen name
+        this.actorToScreenName[actorId] = this.screenName;
+
         // Set up WebSocket for changes
         this.socket = EditorCore.setupWebSocket(
-            this.getActorId(),
+            actorId,
             docKey,
             (channel, messageData) => this.handleIncomingMessage(messageData),
             (command) => this.handleKeyspaceNotification(docKey, command)
@@ -564,6 +671,7 @@ const ShareableMode = {
             }
 
             // Apply changes to a temporary document to get history with context
+            // Use a different actor ID for history replay (it won't be used for new changes)
             let tempDoc = Automerge.init();
             const historyItems = [];
             let prevText = '';
@@ -750,7 +858,7 @@ const ShareableMode = {
 
         listDiv.innerHTML = historyItems.map(item => {
             const time = new Date(item.timestamp).toLocaleTimeString();
-            const actorShort = item.actor.toString().slice(0, 8);
+            const actorName = this.getScreenName(item.actor.toString());
 
             // Format change details
             let changeHtml = '';
@@ -794,7 +902,7 @@ const ShareableMode = {
                         <span class="history-item-index">#${item.index}</span>
                         <span class="history-item-time">${time}</span>
                     </div>
-                    <div class="history-item-actor">Actor: ${actorShort}</div>
+                    <div class="history-item-actor">Actor: ${actorName}</div>
                     ${changeHtml}
                 </div>
             `;
@@ -814,7 +922,7 @@ const ShareableMode = {
         }
 
         const time = new Date(item.timestamp).toLocaleTimeString();
-        const actorShort = item.actor.toString().slice(0, 8);
+        const actorName = this.getScreenName(item.actor.toString());
 
         // Format change details
         let changeHtml = '';
@@ -858,7 +966,7 @@ const ShareableMode = {
                     <span class="history-item-index">#${item.index}</span>
                     <span class="history-item-time">${time}</span>
                 </div>
-                <div class="history-item-actor">Actor: ${actorShort}</div>
+                <div class="history-item-actor">Actor: ${actorName}</div>
                 ${changeHtml}
             </div>
         `;
@@ -885,6 +993,15 @@ const ShareableMode = {
             const newChatLength = newDoc.chat_history ? newDoc.chat_history.length : 0;
 
             this.doc = newDoc;
+
+            // Update screen name mappings from metadata
+            if (this.doc.user_metadata) {
+                for (const [actId, metadata] of Object.entries(this.doc.user_metadata)) {
+                    if (metadata.screenName) {
+                        this.actorToScreenName[actId] = metadata.screenName;
+                    }
+                }
+            }
 
             this.updateEditor();
             this.updateDocInfo();
@@ -1254,6 +1371,8 @@ const ShareableMode = {
             return;
         }
 
+        const currentActorId = this.getActorId();
+
         listDiv.innerHTML = this.documentList.map(({ documentName, activeUsers, peers }) => {
             const userClass = activeUsers > 0 ? 'active' : '';
             const userText = activeUsers === 1 ? '1 user' : `${activeUsers} users`;
@@ -1261,9 +1380,12 @@ const ShareableMode = {
             // Show peers if this is the current document
             const isCurrentDocument = this.currentDocument === documentName;
             const peerListHtml = isCurrentDocument && peers && peers.length > 0
-                ? `<div class="peer-list">${peers.map(peerId =>
-                    `<div class="peer-item">${peerId.slice(0, 8)}</div>`
-                  ).join('')}</div>`
+                ? `<div class="peer-list">${peers.map(peerId => {
+                    const isCurrentUser = peerId === currentActorId;
+                    const peerClass = isCurrentUser ? 'peer-item peer-item-current' : 'peer-item';
+                    const peerName = this.getScreenName(peerId);
+                    return `<div class="${peerClass}">${peerName}</div>`;
+                  }).join('')}</div>`
                 : '';
 
             return `
@@ -1457,18 +1579,22 @@ const ShareableMode = {
         }
 
         const currentChatLength = this.doc.chat_history.length;
+        const currentActorId = this.getActorId();
 
         // Check if we need to do a full refresh or just append new messages
         if (this._displayedChatCount === 0 || this._displayedChatCount > currentChatLength) {
             // Full refresh needed (first load or chat was cleared)
             chatListDiv.innerHTML = this.doc.chat_history.map((msg, index) => {
                 const time = new Date(msg.timestamp).toLocaleTimeString();
-                const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+                const actorName = msg.actor ? this.getScreenName(msg.actor.toString()) : 'unknown';
+                const isCurrentUser = msg.actor === currentActorId;
+                const messageClass = isCurrentUser ? 'chat-message chat-message-current' : 'chat-message';
+                const actorClass = isCurrentUser ? 'chat-message-actor chat-message-actor-current' : 'chat-message-actor';
 
                 return `
-                    <div class="chat-message">
+                    <div class="${messageClass}">
                         <div class="chat-message-header">
-                            <span class="chat-message-actor">${actorShort}</span>
+                            <span class="${actorClass}">${actorName}</span>
                             <span class="chat-message-time">${time}</span>
                         </div>
                         <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
@@ -1496,12 +1622,15 @@ const ShareableMode = {
             // Append new messages
             const newMessagesHtml = newMessages.map((msg, index) => {
                 const time = new Date(msg.timestamp).toLocaleTimeString();
-                const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+                const actorName = msg.actor ? this.getScreenName(msg.actor.toString()) : 'unknown';
+                const isCurrentUser = msg.actor === currentActorId;
+                const messageClass = isCurrentUser ? 'chat-message chat-message-current' : 'chat-message';
+                const actorClass = isCurrentUser ? 'chat-message-actor chat-message-actor-current' : 'chat-message-actor';
 
                 return `
-                    <div class="chat-message">
+                    <div class="${messageClass}">
                         <div class="chat-message-header">
-                            <span class="chat-message-actor">${actorShort}</span>
+                            <span class="${actorClass}">${actorName}</span>
                             <span class="chat-message-time">${time}</span>
                         </div>
                         <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
@@ -1515,9 +1644,11 @@ const ShareableMode = {
 
             // Smoothly scroll to bottom if user was at the bottom
             if (shouldScrollToBottom) {
-                chatContainerDiv.scrollTo({
-                    top: chatContainerDiv.scrollHeight,
-                    behavior: 'smooth'
+                // Use requestAnimationFrame to ensure DOM has fully updated
+                requestAnimationFrame(() => {
+                    requestAnimationFrame(() => {
+                        chatContainerDiv.scrollTop = chatContainerDiv.scrollHeight;
+                    });
                 });
             }
         }

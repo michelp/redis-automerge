@@ -458,6 +458,12 @@ textarea:focus {
     margin-right: 5px;
 }
 
+.peer-item-current {
+    background: #fbbf24;
+    color: #1f2937;
+    font-weight: bold;
+}
+
 .document-name {
     font-weight: bold;
     color: #333;
@@ -671,7 +677,7 @@ textarea:focus {
 .chat-container {
     flex: 1;
     overflow-y: auto;
-    padding: 10px;
+    padding: 10px 10px 0 10px;  /* Remove bottom padding to fix scrolling */
     display: flex;
     flex-direction: column;
 }
@@ -681,6 +687,7 @@ textarea:focus {
     flex-direction: column;
     gap: 8px;
     min-height: 0;
+    padding-bottom: 10px;  /* Add padding here instead of container */
 }
 
 .chat-list:empty::before {
@@ -701,6 +708,11 @@ textarea:focus {
     word-wrap: break-word;
 }
 
+.chat-message-current {
+    background: #fef3c7;
+    border-color: #fbbf24;
+}
+
 .chat-message-header {
     display: flex;
     justify-content: space-between;
@@ -713,6 +725,10 @@ textarea:focus {
     color: #10b981;
     font-size: 11px;
     font-family: 'Courier New', monospace;
+}
+
+.chat-message-actor-current {
+    color: #f59e0b;
 }
 
 .chat-message-time {
@@ -732,6 +748,7 @@ textarea:focus {
     border-top: 1px solid #e5e7eb;
     display: flex;
     gap: 8px;
+    flex-shrink: 0;
 }
 
 .chat-input-container input {

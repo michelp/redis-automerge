@@ -3,115 +3,202 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Redis-Automerge Demo</title>
+    <title>Pamliset - Collaborative Editor</title>
     <link rel="stylesheet" href="style.css">
+    <style>
+        .auth-container {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+
+        .auth-card {
+            background: white;
+            border-radius: 16px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            text-align: center;
+        }
+
+        .auth-card h1 {
+            color: #333;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+
+        .auth-card p {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1em;
+        }
+
+        .auth-form {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .auth-form input {
+            padding: 15px 20px;
+            border: 2px solid #e5e7eb;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .auth-form input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .auth-form button {
+            padding: 15px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .auth-form button:hover {
+            background: #5568d3;
+        }
+
+        .auth-form button:disabled {
+            background: #9ca3af;
+            cursor: not-allowed;
+        }
+
+        .error-message {
+            color: #ef4444;
+            font-size: 14px;
+            margin-top: -10px;
+        }
+    </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>🔴 Redis-Automerge Demo</h1>
-            <p>A Redis module with Automerge CRDT documents</p>
-        </header>
+    <div class="auth-container">
+        <div class="auth-card">
+            <h1>Pamliset</h1>
+            <p>Real-time collaborative editing powered by Automerge CRDTs</p>
 
-        <div class="status">
-            <span id="connection-status" class="status-disconnected">Disconnected</span>
-        </div>
-
-        <div class="section">
-            <h2>Document Management</h2>
-            <div class="controls">
-                <input type="text" id="doc-key" placeholder="Document key (e.g., mydoc)" value="demo">
-                <button onclick="createDocument()">Create Document</button>
-                <button onclick="deleteDocument()">Delete Document</button>
+            <div class="auth-form">
+                <input
+                    type="text"
+                    id="screen-name-input"
+                    placeholder="Enter your screen name"
+                    maxlength="20"
+                    autocomplete="off"
+                    autofocus
+                />
+                <div id="error-message" class="error-message" style="display: none;"></div>
+                <button id="continue-button" onclick="setScreenName()">Continue</button>
             </div>
-        </div>
-
-        <div class="section">
-            <h2>Text Operations</h2>
-            <div class="controls">
-                <input type="text" id="text-path" placeholder="Path (e.g., user.name or $.users[0].name)" value="user.name">
-                <input type="text" id="text-value" placeholder="Text value">
-                <button onclick="putText()">Set Text</button>
-                <button onclick="getText()">Get Text</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Integer Operations</h2>
-            <div class="controls">
-                <input type="text" id="int-path" placeholder="Path (e.g., user.age)" value="user.age">
-                <input type="number" id="int-value" placeholder="Integer value" value="0">
-                <button onclick="putInt()">Set Integer</button>
-                <button onclick="getInt()">Get Integer</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Double Operations</h2>
-            <div class="controls">
-                <input type="text" id="double-path" placeholder="Path (e.g., metrics.cpu)" value="metrics.cpu">
-                <input type="number" id="double-value" placeholder="Double value" step="0.01" value="0.0">
-                <button onclick="putDouble()">Set Double</button>
-                <button onclick="getDouble()">Get Double</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Boolean Operations</h2>
-            <div class="controls">
-                <input type="text" id="bool-path" placeholder="Path (e.g., user.active)" value="user.active">
-                <select id="bool-value">
-                    <option value="true">true</option>
-                    <option value="false">false</option>
-                </select>
-                <button onclick="putBool()">Set Boolean</button>
-                <button onclick="getBool()">Get Boolean</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>List Operations</h2>
-            <div class="controls">
-                <input type="text" id="list-path" placeholder="Path (e.g., users or items)" value="items">
-                <button onclick="createList()">Create List</button>
-                <button onclick="listLen()">Get Length</button>
-            </div>
-            <div class="controls">
-                <input type="text" id="list-append-path" placeholder="List path" value="items">
-                <input type="text" id="list-append-value" placeholder="Value to append">
-                <select id="list-append-type">
-                    <option value="text">Text</option>
-                    <option value="int">Integer</option>
-                    <option value="double">Double</option>
-                    <option value="bool">Boolean</option>
-                </select>
-                <button onclick="appendToList()">Append</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Quick Examples</h2>
-            <div class="examples">
-                <button onclick="runUserProfileExample()">User Profile Example</button>
-                <button onclick="runShoppingCartExample()">Shopping Cart Example</button>
-                <button onclick="runConfigExample()">Configuration Example</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Collaborative Editor Demo</h2>
-            <p>Try the real-time collaborative editor to see Automerge CRDT synchronization in action!</p>
-            <div class="examples">
-                <button onclick="window.location.href='editor.html'" style="background: #10b981;">🚀 Launch Collaborative Editor</button>
-            </div>
-        </div>
-
-        <div class="section">
-            <h2>Output</h2>
-            <div id="output" class="output"></div>
         </div>
     </div>
 
-    <script src="app.js"></script>
+    <script src="auth.js"></script>
+    <script>
+        // Check if user is already authenticated
+        async function checkExistingAuth() {
+            const existingToken = sessionStorage.getItem('authToken');
+            const existingScreenName = sessionStorage.getItem('screenName');
+
+            if (existingToken && existingScreenName) {
+                // Verify token is still valid
+                const verification = await Auth.verify(existingToken);
+                if (verification.valid) {
+                    // Redirect to editor
+                    const urlParams = new URLSearchParams(window.location.search);
+                    const documentParam = urlParams.get('document');
+                    if (documentParam) {
+                        window.location.href = `editor.html?document=${encodeURIComponent(documentParam)}`;
+                    } else {
+                        window.location.href = 'editor.html';
+                    }
+                    return;
+                } else {
+                    // Token invalid - clean up
+                    sessionStorage.removeItem('authToken');
+                    sessionStorage.removeItem('screenName');
+                    sessionStorage.removeItem('actorId');
+                }
+            }
+        }
+
+        // Check on page load
+        checkExistingAuth();
+
+        // Handle Enter key
+        document.getElementById('screen-name-input').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                setScreenName();
+            }
+        });
+
+        async function setScreenName() {
+            const input = document.getElementById('screen-name-input');
+            const errorDiv = document.getElementById('error-message');
+            const continueButton = document.getElementById('continue-button');
+            const screenName = input.value.trim();
+
+            // Validate screen name
+            if (!screenName) {
+                errorDiv.textContent = 'Please enter a screen name';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            if (screenName.length < 2) {
+                errorDiv.textContent = 'Screen name must be at least 2 characters';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            if (!/^[a-zA-Z0-9_-]+$/.test(screenName)) {
+                errorDiv.textContent = 'Screen name can only contain letters, numbers, hyphens, and underscores';
+                errorDiv.style.display = 'block';
+                return;
+            }
+
+            // Disable button to prevent double-click
+            continueButton.disabled = true;
+            continueButton.textContent = 'Registering...';
+
+            // Register with server
+            const result = await Auth.getOrCreateUser(screenName);
+
+            if (result.success) {
+                // Store credentials in session storage
+                sessionStorage.setItem('authToken', result.token);
+                sessionStorage.setItem('screenName', result.screenName);
+                sessionStorage.setItem('actorId', result.actorId);
+
+                // Check if redirecting to a specific document
+                const urlParams = new URLSearchParams(window.location.search);
+                const documentParam = urlParams.get('document');
+
+                if (documentParam) {
+                    window.location.href = `editor.html?document=${encodeURIComponent(documentParam)}`;
+                } else {
+                    window.location.href = 'editor.html';
+                }
+            } else {
+                // Registration failed
+                errorDiv.textContent = result.error || 'Registration failed. Please try again.';
+                errorDiv.style.display = 'block';
+                continueButton.disabled = false;
+                continueButton.textContent = 'Continue';
+            }
+        }
+    </script>
 </body>
 </html>
