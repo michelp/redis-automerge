@@ -11,6 +11,9 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 - **Automatic conflict resolution** using Automerge CRDTs
 - **Nested data structures** - maps and arrays with dot notation and array indices
 - **Type-safe operations** - text, integers, doubles, and booleans
+- **Real-time synchronization** - pub/sub change notifications for live updates
+- **Efficient text editing** - splice operations and unified diff support
+- **Change history** - retrieve document changes for synchronization
 - **Persistent storage** via Redis RDB and AOF
 - **Replication support** for Redis clusters
 
@@ -57,23 +60,26 @@ docker compose up
 # Access Webdis API at http://localhost:7379
 ```
 
-## Demo Applications
+## Live Demo
 
-Web-based interactive demos are available at `http://localhost:8080` when running `docker compose up`.
+A collaborative text editor is available at `http://localhost:8080` when running `docker compose up`.
 
-### Main Demo
-- Interactive UI for all Redis-Automerge commands
-- Real-time command logging
-- Pre-built examples (user profiles, shopping carts, configuration)
-- Support for nested paths and all data types
+### Pamliset - Collaborative Editor
+- **Real-time collaboration** - Multiple users can edit documents simultaneously
+- **Screen name authentication** - Simple username-based access with server-side validation
+- **Document management** - Create and switch between multiple documents
+- **Live chat** - Built-in chat for each document
+- **Change history** - View all document changes with details
+- **Automatic conflict resolution** - Powered by Automerge CRDTs
+- **Persistent storage** - All documents stored in Redis
 
-### Collaborative Editor
-- Real-time collaborative text editor with side-by-side panes
-- Demonstrates Automerge CRDT synchronization
-- Local-first architecture with automatic conflict resolution
-- Live sync via Redis pub/sub
+The demo showcases:
+- Real-time synchronization using `AM.APPLY` and `AM.CHANGES`
+- WebSocket pub/sub for instant updates
+- Text editing with `AM.SPLICETEXT`
+- Local-first architecture with automatic merging
 
-See [demo/README.md](demo/README.md) and [demo/COLLABORATIVE_EDITOR.md](demo/COLLABORATIVE_EDITOR.md) for details.
+Try it: Open `http://localhost:8080` in multiple browser tabs with different screen names and watch edits sync in real-time!
 
 ## Redis Commands
 
@@ -101,11 +107,26 @@ AM.LOAD mydoc <binary-data>
 ```
 
 #### `AM.APPLY <key> <change>...`
-Apply Automerge changes to a document (for synchronization).
+Apply one or more Automerge changes to a document. Used for synchronization between clients.
 
 ```redis
 AM.APPLY mydoc <change1> <change2>
 ```
+
+Each change is published to the `changes:{key}` Redis pub/sub channel as base64-encoded data, enabling real-time synchronization across all connected clients.
+
+#### `AM.CHANGES <key> [<hash>...]`
+Get changes from a document that are not in the provided dependency list. Returns all changes when no hashes are provided.
+
+```redis
+# Get all changes
+AM.CHANGES mydoc
+
+# Get only new changes (provide known change hashes)
+AM.CHANGES mydoc <hash1> <hash2>
+```
+
+This command is essential for synchronizing document state between clients. A client can request only the changes it doesn't have by providing the hashes of changes it already knows about.
 
 ### Value Operations
 
@@ -123,6 +144,37 @@ Get a text value from the specified path.
 ```redis
 AM.GETTEXT mydoc user.name
 # Returns: "Alice"
+```
+
+#### `AM.SPLICETEXT <key> <path> <pos> <del> <text>`
+Perform a splice operation on text (insert, delete, or replace characters). This is more efficient than replacing entire strings for small edits.
+
+```redis
+# Replace "World" with "Redis" in "Hello World"
+AM.SPLICETEXT mydoc greeting 6 5 "Redis"
+
+# Insert " there" at position 5 in "Hello"
+AM.SPLICETEXT mydoc greeting 5 0 " there"
+
+# Delete 3 characters starting at position 10
+AM.SPLICETEXT mydoc greeting 10 3 ""
+```
+
+Parameters:
+- `pos` - Starting position (0-indexed)
+- `del` - Number of characters to delete
+- `text` - Text to insert at position
+
+#### `AM.PUTDIFF <key> <path> <diff>`
+Apply a unified diff to update text efficiently. Useful for applying patches from version control systems.
+
+```redis
+AM.PUTDIFF mydoc content "--- a/content
++++ b/content
+@@ -1 +1 @@
+-Hello World
++Hello Redis
+"
 ```
 
 #### `AM.PUTINT <key> <path> <value>`
@@ -222,6 +274,55 @@ Get the length of a list.
 AM.LISTLEN mydoc users
 # Returns: 2
 ```
+
+## Real-Time Synchronization
+
+Redis-Automerge provides built-in support for real-time synchronization using Redis pub/sub.
+
+### Change Notifications
+
+All write operations (`AM.PUTTEXT`, `AM.SPLICETEXT`, `AM.APPLY`, etc.) automatically publish changes to a Redis pub/sub channel:
+
+```
+Channel: changes:{key}
+Message: base64-encoded Automerge change bytes
+```
+
+### Subscribing to Changes
+
+Clients can subscribe to document changes using Redis SUBSCRIBE:
+
+```redis
+SUBSCRIBE changes:mydoc
+```
+
+Or using Webdis WebSocket (`.json` endpoint):
+
+```javascript
+const ws = new WebSocket('ws://localhost:7379/.json');
+ws.send(JSON.stringify(['SUBSCRIBE', 'changes:mydoc']));
+```
+
+### Synchronization Pattern
+
+1. **Client A** makes a change to a document
+2. Change is applied locally and sent to server via `AM.APPLY`
+3. Server stores the change and publishes to `changes:{key}` channel
+4. **Client B** receives change via pub/sub subscription
+5. **Client B** applies change locally using `Automerge.applyChanges()`
+6. Both clients are now synchronized with automatic conflict resolution
+
+### Loading Document State
+
+New clients can sync by:
+1. Load full document: `AM.SAVE {key}` → `Automerge.load(bytes)`
+2. Subscribe to changes: `SUBSCRIBE changes:{key}`
+3. Apply incremental updates as they arrive
+
+Or use `AM.CHANGES` for differential sync:
+1. Get all changes: `AM.CHANGES {key}`
+2. Apply changes in order
+3. Subscribe for future updates
 
 ## Path Syntax
 
@@ -399,9 +500,35 @@ This generates detailed API documentation for the Rust code and opens it in your
 1. **Path Parser** - Converts RedisJSON-style paths to internal segments
 2. **Navigation** - Traverses nested maps and lists, creates intermediate structures
 3. **Type Operations** - Type-safe get/put operations for different data types
-4. **List Operations** - Create lists, append values, get length
-5. **Persistence** - RDB save/load and AOF change tracking
-6. **Replication** - Change propagation to Redis replicas
+4. **Text Operations** - Efficient splice and diff operations for text editing
+5. **List Operations** - Create lists, append values, get length
+6. **Change Management** - Track and retrieve document changes for synchronization
+7. **Pub/Sub Integration** - Automatic change notifications via Redis channels
+8. **Persistence** - RDB save/load and AOF change tracking
+9. **Replication** - Change propagation to Redis replicas
+
+### Synchronization Flow
+
+```
+┌─────────────┐         ┌──────────────┐         ┌─────────────┐
+│  Client A   │         │    Redis     │         │  Client B   │
+│  (Browser)  │         │ + Module     │         │  (Browser)  │
+└──────┬──────┘         └──────┬───────┘         └──────┬──────┘
+       │                       │                        │
+       │  1. Local Edit        │                        │
+       │─────────────────────> │                        │
+       │  AM.SPLICETEXT        │                        │
+       │                       │                        │
+       │  2. Change Published  │                        │
+       │                       ├────────────────────────>
+       │                       │  PUBLISH changes:doc   │
+       │                       │                        │
+       │                       │  3. Apply Change       │
+       │                       │                        │
+       │                       │ <──────────────────────│
+       │                       │                        │
+       │  4. Both Synced       │                        │
+```
 
 ## Contributing
 
