@@ -637,20 +637,31 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         return Err(RedisError::WrongArity);
     }
     let key_name = &args[1];
-    let key = ctx.open_key_writable(key_name);
-    let client = key
-        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
-        .ok_or(RedisError::Str("no such key"))?;
-    let mut changes = Vec::new();
+
+    // Parse and apply changes, then publish each one to subscribers
+    {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        let mut changes = Vec::new();
+        for change_str in &args[2..] {
+            let bytes = change_str.to_vec();
+            let change = Change::from_bytes(bytes)
+                .map_err(|e| RedisError::String(format!("invalid change: {}", e)))?;
+            changes.push(change);
+        }
+        client
+            .apply(changes)
+            .map_err(|e| RedisError::String(e.to_string()))?;
+    } // key is dropped here
+
+    // Publish each change to subscribers
     for change_str in &args[2..] {
-        let bytes = change_str.to_vec();
-        let change = Change::from_bytes(bytes)
-            .map_err(|e| RedisError::String(format!("invalid change: {}", e)))?;
-        changes.push(change);
+        let change_bytes = change_str.to_vec();
+        publish_change(ctx, key_name, Some(change_bytes))?;
     }
-    client
-        .apply(changes)
-        .map_err(|e| RedisError::String(e.to_string()))?;
+
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.apply", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.apply", key_name);
