@@ -1406,6 +1406,22 @@ function selectAllLog() {
     selection.addRange(range);
 }
 
+function toggleSyncLog() {
+    const logDiv = document.getElementById('sync-log');
+    const buttonsDiv = document.getElementById('sync-log-buttons');
+    const toggleSpan = document.getElementById('sync-log-toggle');
+
+    if (logDiv.style.display === 'none') {
+        logDiv.style.display = 'block';
+        buttonsDiv.style.display = 'block';
+        toggleSpan.textContent = '▼';
+    } else {
+        logDiv.style.display = 'none';
+        buttonsDiv.style.display = 'none';
+        toggleSpan.textContent = '▶';
+    }
+}
+
 // Initialize
 window.addEventListener('load', async () => {
     EditorCore.log('Collaborative editor loaded', 'server');

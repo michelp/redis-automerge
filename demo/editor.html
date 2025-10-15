@@ -74,11 +74,15 @@
     <!-- Sync Log -->
     <div class="log-container">
         <div class="log-header">
-            <h3>Sync Log</h3>
-            <button onclick="selectAllLog()">Select All</button>
-            <button onclick="clearLog()">Clear</button>
+            <h3 onclick="toggleSyncLog()" style="cursor: pointer; user-select: none;">
+                <span id="sync-log-toggle">▶</span> Sync Log
+            </h3>
+            <div id="sync-log-buttons" style="display: none;">
+                <button onclick="selectAllLog()">Select All</button>
+                <button onclick="clearLog()">Clear</button>
+            </div>
         </div>
-        <div id="sync-log" class="sync-log"></div>
+        <div id="sync-log" class="sync-log" style="display: none;"></div>
     </div>
 
     <!-- Use Automerge 3.1.2 from CDN (matches server's Rust automerge 1.0.0-beta.6) -->
