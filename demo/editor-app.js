@@ -239,6 +239,7 @@ const ShareableMode = {
     refreshInterval: null,
     heartbeatInterval: null,
     isLocallyEditing: false, // Track if we're actively making changes
+    _displayedChatCount: 0, // Track how many chat messages have been displayed
 
     /**
      * Get the actor ID from the current document
@@ -396,6 +397,9 @@ const ShareableMode = {
             // Clear history display
             document.getElementById('history-list').innerHTML =
                 '<div style="padding: 20px; text-align: center; color: #999;">Loading history...</div>';
+
+            // Reset chat count
+            this._displayedChatCount = 0;
         }
 
         const docKey = `am:document:${documentName}`;
@@ -1444,30 +1448,79 @@ const ShareableMode = {
      */
     displayChatMessages() {
         const chatListDiv = document.getElementById('chat-list');
+        const chatContainerDiv = chatListDiv.parentElement; // The actual scrolling container
 
         if (!this.doc || !this.doc.chat_history || this.doc.chat_history.length === 0) {
             chatListDiv.innerHTML = '<div style="padding: 20px; text-align: center; color: #999;">No messages yet</div>';
+            this._displayedChatCount = 0;
             return;
         }
 
-        // Display all messages (oldest first, newest at bottom)
-        chatListDiv.innerHTML = this.doc.chat_history.map((msg, index) => {
-            const time = new Date(msg.timestamp).toLocaleTimeString();
-            const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+        const currentChatLength = this.doc.chat_history.length;
 
-            return `
-                <div class="chat-message">
-                    <div class="chat-message-header">
-                        <span class="chat-message-actor">${actorShort}</span>
-                        <span class="chat-message-time">${time}</span>
+        // Check if we need to do a full refresh or just append new messages
+        if (this._displayedChatCount === 0 || this._displayedChatCount > currentChatLength) {
+            // Full refresh needed (first load or chat was cleared)
+            chatListDiv.innerHTML = this.doc.chat_history.map((msg, index) => {
+                const time = new Date(msg.timestamp).toLocaleTimeString();
+                const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+
+                return `
+                    <div class="chat-message">
+                        <div class="chat-message-header">
+                            <span class="chat-message-actor">${actorShort}</span>
+                            <span class="chat-message-time">${time}</span>
+                        </div>
+                        <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
                     </div>
-                    <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
-                </div>
-            `;
-        }).join('');
+                `;
+            }).join('');
 
-        // Scroll to bottom to show newest messages
-        chatListDiv.scrollTop = chatListDiv.scrollHeight;
+            this._displayedChatCount = currentChatLength;
+
+            // Scroll to bottom on initial load
+            requestAnimationFrame(() => {
+                chatContainerDiv.scrollTop = chatContainerDiv.scrollHeight;
+            });
+        } else if (currentChatLength > this._displayedChatCount) {
+            // Append only new messages
+            const newMessages = this.doc.chat_history.slice(this._displayedChatCount);
+
+            // Check if user is at or near the bottom before adding new messages
+            const oldScrollHeight = chatContainerDiv.scrollHeight;
+            const oldScrollTop = chatContainerDiv.scrollTop;
+            const clientHeight = chatContainerDiv.clientHeight;
+            const distanceFromBottom = oldScrollHeight - oldScrollTop - clientHeight;
+            const shouldScrollToBottom = distanceFromBottom < 50; // User is following the conversation
+
+            // Append new messages
+            const newMessagesHtml = newMessages.map((msg, index) => {
+                const time = new Date(msg.timestamp).toLocaleTimeString();
+                const actorShort = msg.actor ? msg.actor.toString().slice(0, 8) : 'unknown';
+
+                return `
+                    <div class="chat-message">
+                        <div class="chat-message-header">
+                            <span class="chat-message-actor">${actorShort}</span>
+                            <span class="chat-message-time">${time}</span>
+                        </div>
+                        <div class="chat-message-text">${this.escapeHtml(msg.message)}</div>
+                    </div>
+                `;
+            }).join('');
+
+            chatListDiv.insertAdjacentHTML('beforeend', newMessagesHtml);
+
+            this._displayedChatCount = currentChatLength;
+
+            // Smoothly scroll to bottom if user was at the bottom
+            if (shouldScrollToBottom) {
+                chatContainerDiv.scrollTo({
+                    top: chatContainerDiv.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }
+        }
     },
 
     /**
