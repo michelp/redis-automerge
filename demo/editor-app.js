@@ -856,12 +856,12 @@ const ShareableMode = {
             return;
         }
 
-        listDiv.innerHTML = historyItems.map(item => {
-            const time = new Date(item.timestamp).toLocaleTimeString();
+        listDiv.innerHTML = historyItems.map((item, idx) => {
             const actorName = this.getScreenName(item.actor.toString());
+            const itemId = `history-item-${idx}`;
 
-            // Format change details
-            let changeHtml = '';
+            // Format change details for collapsed view
+            let detailsHtml = '';
             if (item.changeDetails) {
                 const details = item.changeDetails;
                 const typeIcon = {
@@ -878,18 +878,28 @@ const ShareableMode = {
                     'none': '#9ca3af'
                 }[details.type] || '#666';
 
-                changeHtml = `
-                    <div class="history-item-change" style="margin-top: 6px; padding: 6px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
-                        <div style="color: ${typeColor}; font-weight: bold; margin-bottom: 3px;">
-                            ${typeIcon} ${details.type.toUpperCase()}
-                        </div>
-                        <div style="color: #666; word-break: break-word;">
-                            ${details.description}
+                // Extract text from description (remove "Inserted: ", "Deleted: " prefixes)
+                let text = '';
+                if (details.type === 'insert') {
+                    text = details.description.replace('Inserted "', '').replace('"', '');
+                } else if (details.type === 'delete') {
+                    text = details.description.replace('Deleted "', '').replace('"', '');
+                } else if (details.type === 'replace') {
+                    text = details.description.replace('Replaced "', '').replace('"', '');
+                } else {
+                    text = details.description;
+                }
+
+                detailsHtml = `
+                    <div class="history-details" id="${itemId}-details" style="display: none; margin-top: 6px; padding: 6px 8px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
+                        <div style="color: ${typeColor}; font-weight: 600; margin-bottom: 4px;">
+                            ${typeIcon} ${details.type.toUpperCase()}: ${text}
                         </div>
                         ${details.added > 0 || details.removed > 0 ? `
-                            <div style="margin-top: 3px; font-size: 10px; color: #999;">
+                            <div style="font-size: 10px; color: #999;">
                                 ${details.added > 0 ? `<span style="color: #10b981;">+${details.added}</span>` : ''}
                                 ${details.removed > 0 ? `<span style="color: #ef4444;"> -${details.removed}</span>` : ''}
+                                ${details.position !== undefined ? ` @ pos ${details.position}` : ''}
                             </div>
                         ` : ''}
                     </div>
@@ -897,16 +907,34 @@ const ShareableMode = {
             }
 
             return `
-                <div class="history-item">
-                    <div class="history-item-header">
-                        <span class="history-item-index">#${item.index}</span>
-                        <span class="history-item-time">${time}</span>
+                <div class="history-item" style="padding: 6px 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer; user-select: none;" onclick="ShareableMode.toggleHistoryItem('${itemId}')">
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span id="${itemId}-arrow" style="font-size: 10px; color: #9ca3af;">▶</span>
+                        <span style="font-weight: 600; font-size: 13px;">#${item.index}: ${actorName}</span>
                     </div>
-                    <div class="history-item-actor">Actor: ${actorName}</div>
-                    ${changeHtml}
+                    ${detailsHtml}
                 </div>
             `;
         }).join('');
+    },
+
+    /**
+     * Toggle history item details
+     * @param {string} itemId - The history item ID
+     */
+    toggleHistoryItem(itemId) {
+        const details = document.getElementById(`${itemId}-details`);
+        const arrow = document.getElementById(`${itemId}-arrow`);
+
+        if (details && arrow) {
+            if (details.style.display === 'none') {
+                details.style.display = 'block';
+                arrow.textContent = '▼';
+            } else {
+                details.style.display = 'none';
+                arrow.textContent = '▶';
+            }
+        }
     },
 
     /**
@@ -921,11 +949,11 @@ const ShareableMode = {
             listDiv.innerHTML = '';
         }
 
-        const time = new Date(item.timestamp).toLocaleTimeString();
         const actorName = this.getScreenName(item.actor.toString());
+        const itemId = `history-item-${Date.now()}`;
 
-        // Format change details
-        let changeHtml = '';
+        // Format change details for collapsed view
+        let detailsHtml = '';
         if (item.changeDetails) {
             const details = item.changeDetails;
             const typeIcon = {
@@ -942,18 +970,28 @@ const ShareableMode = {
                 'none': '#9ca3af'
             }[details.type] || '#666';
 
-            changeHtml = `
-                <div class="history-item-change" style="margin-top: 6px; padding: 6px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
-                    <div style="color: ${typeColor}; font-weight: bold; margin-bottom: 3px;">
-                        ${typeIcon} ${details.type.toUpperCase()}
-                    </div>
-                    <div style="color: #666; word-break: break-word;">
-                        ${details.description}
+            // Extract text from description (remove "Inserted: ", "Deleted: " prefixes)
+            let text = '';
+            if (details.type === 'insert') {
+                text = details.description.replace('Inserted "', '').replace('"', '');
+            } else if (details.type === 'delete') {
+                text = details.description.replace('Deleted "', '').replace('"', '');
+            } else if (details.type === 'replace') {
+                text = details.description.replace('Replaced "', '').replace('"', '');
+            } else {
+                text = details.description;
+            }
+
+            detailsHtml = `
+                <div class="history-details" id="${itemId}-details" style="display: none; margin-top: 6px; padding: 6px 8px; background: #f9fafb; border-radius: 4px; font-size: 11px;">
+                    <div style="color: ${typeColor}; font-weight: 600; margin-bottom: 4px;">
+                        ${typeIcon} ${details.type.toUpperCase()}: ${text}
                     </div>
                     ${details.added > 0 || details.removed > 0 ? `
-                        <div style="margin-top: 3px; font-size: 10px; color: #999;">
+                        <div style="font-size: 10px; color: #999;">
                             ${details.added > 0 ? `<span style="color: #10b981;">+${details.added}</span>` : ''}
                             ${details.removed > 0 ? `<span style="color: #ef4444;"> -${details.removed}</span>` : ''}
+                            ${details.position !== undefined ? ` @ pos ${details.position}` : ''}
                         </div>
                     ` : ''}
                 </div>
@@ -961,13 +999,12 @@ const ShareableMode = {
         }
 
         const itemHtml = `
-            <div class="history-item">
-                <div class="history-item-header">
-                    <span class="history-item-index">#${item.index}</span>
-                    <span class="history-item-time">${time}</span>
+            <div class="history-item" style="padding: 6px 10px; border-bottom: 1px solid #e5e7eb; cursor: pointer; user-select: none;" onclick="ShareableMode.toggleHistoryItem('${itemId}')">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <span id="${itemId}-arrow" style="font-size: 10px; color: #9ca3af;">▶</span>
+                    <span style="font-weight: 600; font-size: 13px;">#${item.index}: ${actorName}</span>
                 </div>
-                <div class="history-item-actor">Actor: ${actorName}</div>
-                ${changeHtml}
+                ${detailsHtml}
             </div>
         `;
 

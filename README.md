@@ -64,7 +64,7 @@ docker compose up
 
 A collaborative text editor is available at `http://localhost:8080` when running `docker compose up`.
 
-### Pamliset - Collaborative Editor
+### Palimset - Collaborative Editor
 - **Real-time collaboration** - Multiple users can edit documents simultaneously
 - **Screen name authentication** - Simple username-based access with server-side validation
 - **Document management** - Create and switch between multiple documents
