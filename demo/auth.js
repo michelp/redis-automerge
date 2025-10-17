@@ -1,107 +1,33 @@
 // ============================================================================
-// Auth Module - Server-side user management
+// Auth Module - OAuth session management
 // ============================================================================
 
 const Auth = {
     WEBDIS_URL: `${window.location.protocol}//${window.location.host}/api`,
+    AUTH_URL: `${window.location.protocol}//${window.location.host}/auth`,
 
     /**
-     * Generate a secure random token
-     * @returns {string} 64-character hex token
+     * Check current OAuth session status
+     * @returns {Promise<{authenticated: boolean, user?: object}>}
      */
-    generateToken() {
-        const bytes = crypto.getRandomValues(new Uint8Array(32));
-        return Array.from(bytes)
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('');
-    },
-
-    /**
-     * Generate a stable actor ID
-     * @returns {string} 32-character hex actor ID
-     */
-    generateActorId() {
-        const bytes = crypto.getRandomValues(new Uint8Array(16));
-        return Array.from(bytes)
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('');
-    },
-
-    /**
-     * Register a new user with the server
-     * @param {string} screenName - The desired screen name
-     * @returns {Promise<{success: boolean, token?: string, actorId?: string, error?: string}>}
-     */
-    async register(screenName) {
+    async checkSession() {
         try {
-            const token = this.generateToken();
-            const actorId = this.generateActorId();
-            const timestamp = Date.now();
-
-            // Check if screen name is already taken
-            const checkResponse = await fetch(
-                `${this.WEBDIS_URL}/SCARD/user:name:${encodeURIComponent(screenName)}`
-            );
-            const checkData = await checkResponse.json();
-            const existingUsers = checkData.SCARD || 0;
-
-            if (existingUsers > 0) {
-                return {
-                    success: false,
-                    error: `Screen name "${screenName}" is already in use`
-                };
-            }
-
-            // Store user data in hash
-            const userKey = `user:token:${token}`;
-            const hmsetResponse = await fetch(
-                `${this.WEBDIS_URL}/HMSET/${userKey}/screenName/${encodeURIComponent(screenName)}/actorId/${actorId}/created/${timestamp}/lastSeen/${timestamp}`
-            );
-            const hmsetData = await hmsetResponse.json();
-
-            // Webdis returns {"HMSET":[true,"OK"]} or {"HMSET":"OK"}
-            const hmsetResult = hmsetData.HMSET;
-            const isSuccess = hmsetResult === 'OK' ||
-                            hmsetResult === true ||
-                            (Array.isArray(hmsetResult) && (hmsetResult[0] === true || hmsetResult[1] === 'OK'));
-
-            if (!isSuccess) {
-                console.error('HMSET failed:', hmsetData);
-                return {
-                    success: false,
-                    error: 'Failed to store user data'
-                };
-            }
-
-            // Add token to screen name set
-            const saddResponse = await fetch(
-                `${this.WEBDIS_URL}/SADD/user:name:${encodeURIComponent(screenName)}/${token}`
-            );
-            const saddData = await saddResponse.json();
-
-            // Store actor ID to token mapping
-            const actorMapResponse = await fetch(
-                `${this.WEBDIS_URL}/SET/user:actor:${actorId}/${token}`
-            );
-            const actorMapData = await actorMapResponse.json();
-
-            return {
-                success: true,
-                token,
-                actorId,
-                screenName
-            };
+            const response = await fetch(`${this.AUTH_URL}/session`, {
+                credentials: 'include'
+            });
+            const data = await response.json();
+            return data;
         } catch (error) {
-            console.error('Registration error:', error);
+            console.error('Session check error:', error);
             return {
-                success: false,
-                error: `Registration failed: ${error.message}`
+                authenticated: false,
+                error: error.message
             };
         }
     },
 
     /**
-     * Verify a token and get user data
+     * Verify a token and get user data from Redis
      * @param {string} token - The auth token
      * @returns {Promise<{valid: boolean, screenName?: string, actorId?: string, error?: string}>}
      */
@@ -158,7 +84,9 @@ const Auth = {
             return {
                 valid: true,
                 screenName: userData.screenName,
-                actorId: userData.actorId
+                actorId: userData.actorId,
+                provider: userData.provider,
+                avatarUrl: userData.avatarUrl
             };
         } catch (error) {
             console.error('Verification error:', error);
@@ -170,30 +98,26 @@ const Auth = {
     },
 
     /**
-     * Logout - remove user data from server
-     * @param {string} token - The auth token
+     * Logout - destroy OAuth session and clean up
      * @returns {Promise<boolean>} True if successful
      */
-    async logout(token) {
+    async logout() {
         try {
-            // Get user data first to get screen name and actor ID
-            const userData = await this.verify(token);
-            if (!userData.valid) {
-                return false;
+            const response = await fetch(`${this.AUTH_URL}/logout`, {
+                method: 'POST',
+                credentials: 'include'
+            });
+
+            if (!response.ok) {
+                throw new Error('Logout request failed');
             }
 
-            const { screenName, actorId } = userData;
-
-            // Remove token from screen name set
-            await fetch(
-                `${this.WEBDIS_URL}/SREM/user:name:${encodeURIComponent(screenName)}/${token}`
-            );
-
-            // Remove actor ID mapping
-            await fetch(`${this.WEBDIS_URL}/DEL/user:actor:${actorId}`);
-
-            // Remove user data hash
-            await fetch(`${this.WEBDIS_URL}/DEL/user:token:${token}`);
+            // Clean up session storage
+            sessionStorage.removeItem('authToken');
+            sessionStorage.removeItem('screenName');
+            sessionStorage.removeItem('actorId');
+            sessionStorage.removeItem('provider');
+            sessionStorage.removeItem('avatarUrl');
 
             return true;
         } catch (error) {
@@ -203,44 +127,45 @@ const Auth = {
     },
 
     /**
-     * Get or create auth token for a screen name
-     * This is the main entry point for user authentication
-     * @param {string} screenName - The desired screen name
-     * @returns {Promise<{success: boolean, token?: string, actorId?: string, error?: string}>}
+     * Ensure user is authenticated, redirect to login if not
+     * @returns {Promise<{token: string, screenName: string, actorId: string} | null>}
      */
-    async getOrCreateUser(screenName) {
-        // Check if we have a token in session storage
-        const existingToken = sessionStorage.getItem('authToken');
+    async requireAuth() {
+        // Check sessionStorage first
+        const token = sessionStorage.getItem('authToken');
+        const screenName = sessionStorage.getItem('screenName');
+        const actorId = sessionStorage.getItem('actorId');
 
-        if (existingToken) {
-            // Verify existing token
-            const verification = await this.verify(existingToken);
+        if (token && screenName && actorId) {
+            // Verify token is still valid
+            const verification = await this.verify(token);
             if (verification.valid) {
-                // Token is valid and matches our screen name
-                if (verification.screenName === screenName) {
-                    return {
-                        success: true,
-                        token: existingToken,
-                        actorId: verification.actorId,
-                        screenName: verification.screenName
-                    };
-                } else {
-                    // Token exists but screen name doesn't match - logout old session
-                    await this.logout(existingToken);
-                    sessionStorage.removeItem('authToken');
-                    sessionStorage.removeItem('screenName');
-                    sessionStorage.removeItem('actorId');
-                }
-            } else {
-                // Token is invalid - clean up
-                sessionStorage.removeItem('authToken');
-                sessionStorage.removeItem('screenName');
-                sessionStorage.removeItem('actorId');
+                return { token, screenName, actorId };
             }
         }
 
-        // Register new user
-        return await this.register(screenName);
+        // Check if we have a server session
+        const session = await this.checkSession();
+        if (session.authenticated && session.user) {
+            // Store in sessionStorage
+            sessionStorage.setItem('authToken', session.user.token);
+            sessionStorage.setItem('screenName', session.user.screenName);
+            sessionStorage.setItem('actorId', session.user.actorId);
+            sessionStorage.setItem('provider', session.user.provider);
+            if (session.user.avatarUrl) {
+                sessionStorage.setItem('avatarUrl', session.user.avatarUrl);
+            }
+
+            return {
+                token: session.user.token,
+                screenName: session.user.screenName,
+                actorId: session.user.actorId
+            };
+        }
+
+        // Not authenticated - redirect to login
+        window.location.href = '/index.html';
+        return null;
     }
 };
 

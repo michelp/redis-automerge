@@ -275,47 +275,56 @@ const ShareableMode = {
     },
 
     /**
+     * Display user info with OAuth provider information
+     */
+    displayUserInfo() {
+        const provider = sessionStorage.getItem('provider') || 'oauth';
+        const avatarUrl = sessionStorage.getItem('avatarUrl');
+
+        // Create user info HTML with avatar if available
+        let userInfoHtml = `<span style="font-weight: 600;">${this.screenName}</span>`;
+
+        if (avatarUrl) {
+            userInfoHtml = `
+                <div style="display: inline-flex; align-items: center; gap: 8px;">
+                    <img src="${avatarUrl}" alt="${this.screenName}" style="width: 24px; height: 24px; border-radius: 50%; border: 2px solid #667eea;" />
+                    <span style="font-weight: 600;">${this.screenName}</span>
+                    <span style="font-size: 11px; color: #999;">(${provider})</span>
+                </div>
+            `;
+        } else {
+            userInfoHtml += ` <span style="font-size: 11px; color: #999;">(${provider})</span>`;
+        }
+
+        // Update any user info displays in the UI
+        const userInfoElements = document.querySelectorAll('.user-info-display');
+        userInfoElements.forEach(el => {
+            el.innerHTML = userInfoHtml;
+        });
+
+        EditorCore.log(`Authenticated via ${provider}`, 'shareable');
+    },
+
+    /**
      * Initialize shareable mode
      */
     async initialize() {
-        // Check if user is authenticated
-        const authToken = sessionStorage.getItem('authToken');
-        const screenName = sessionStorage.getItem('screenName');
-        const actorId = sessionStorage.getItem('actorId');
-
-        if (!authToken || !screenName || !actorId) {
-            // Not authenticated - redirect to landing page
-            const urlDocument = this.parseUrlDocument();
-            if (urlDocument) {
-                window.location.href = `index.html?document=${encodeURIComponent(urlDocument)}`;
-            } else {
-                window.location.href = 'index.html';
-            }
-            return;
-        }
-
-        // Verify token is still valid
-        const verification = await Auth.verify(authToken);
-        if (!verification.valid) {
-            // Token invalid - clean up and redirect
-            sessionStorage.removeItem('authToken');
-            sessionStorage.removeItem('screenName');
-            sessionStorage.removeItem('actorId');
-            const urlDocument = this.parseUrlDocument();
-            if (urlDocument) {
-                window.location.href = `index.html?document=${encodeURIComponent(urlDocument)}`;
-            } else {
-                window.location.href = 'index.html';
-            }
+        // Check authentication using new OAuth-aware Auth module
+        const auth = await Auth.requireAuth();
+        if (!auth) {
+            // requireAuth() will redirect to login if not authenticated
             return;
         }
 
         // Store user credentials
-        this.screenName = screenName;
-        this.stableActorId = actorId;
-        this.authToken = authToken;
+        this.screenName = auth.screenName;
+        this.stableActorId = auth.actorId;
+        this.authToken = auth.token;
 
         EditorCore.log(`Logged in as: ${this.screenName} (actor: ${this.stableActorId.slice(0, 8)}...)`, 'shareable');
+
+        // Display user info with OAuth provider
+        this.displayUserInfo();
 
         // Check for document in URL
         const urlDocument = this.parseUrlDocument();
