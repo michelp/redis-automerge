@@ -60,17 +60,39 @@ passport.use(new GitHubStrategy({
   },
   async (accessToken, refreshToken, profile, done) => {
     try {
-      // Generate unique token and actor ID for this user
-      const token = crypto.randomBytes(32).toString('hex');
-      const actorId = crypto.randomBytes(16).toString('hex');
-
-      // Use GitHub username as screen name
-      const screenName = profile.username;
       const provider = 'github';
       const providerId = profile.id;
-
-      // Get avatar URL from profile
+      const screenName = profile.username;
       const avatarUrl = profile.photos && profile.photos[0] ? profile.photos[0].value : null;
+
+      // Check if this GitHub user already has an account
+      const existingToken = await redisClient.get(`user:provider:${provider}:${providerId}`);
+
+      if (existingToken) {
+        // User exists - reuse their token and actorId to maintain consistency
+        const userData = await redisClient.hGetAll(`user:token:${existingToken}`);
+
+        if (userData && Object.keys(userData).length > 0) {
+          // Update lastSeen timestamp
+          userData.lastSeen = Date.now().toString();
+
+          // Update avatar URL in case it changed
+          userData.avatarUrl = avatarUrl || userData.avatarUrl || '';
+
+          await redisClient.hSet(`user:token:${existingToken}`, userData);
+
+          // Refresh expiry
+          await redisClient.expire(`user:token:${existingToken}`, 60 * 60 * 24 * 7);
+
+          console.log(`Existing user logged in: ${screenName} (actorId: ${userData.actorId})`);
+          return done(null, userData);
+        }
+        // If token exists but user data is missing, fall through to create new user
+      }
+
+      // New user - generate unique token and actor ID
+      const token = crypto.randomBytes(32).toString('hex');
+      const actorId = crypto.randomBytes(16).toString('hex');
 
       const userData = {
         token,
@@ -92,6 +114,7 @@ passport.use(new GitHubStrategy({
       // Set expiry on user data (7 days to match session)
       await redisClient.expire(`user:token:${token}`, 60 * 60 * 24 * 7);
 
+      console.log(`New user registered: ${screenName} (actorId: ${actorId})`);
       done(null, userData);
     } catch (err) {
       done(err);
