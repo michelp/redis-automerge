@@ -25,3 +25,6 @@ aws-deploy/instance-info.txt
 aws-deploy/instance-info.txt.bak
 *.pem
 *.key
+
+# Git worktrees
+.worktrees/
