@@ -278,8 +278,8 @@ const ShareableMode = {
      * Display user info with OAuth provider information
      */
     displayUserInfo() {
-        const provider = sessionStorage.getItem('provider') || 'oauth';
-        const avatarUrl = sessionStorage.getItem('avatarUrl');
+        const provider = localStorage.getItem('provider') || 'oauth';
+        const avatarUrl = localStorage.getItem('avatarUrl');
 
         // Create user info HTML with avatar if available
         let userInfoHtml = `<span style="font-weight: 600;">${this.screenName}</span>`;

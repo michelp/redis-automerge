@@ -154,13 +154,13 @@
                 const data = await response.json();
 
                 if (data.authenticated) {
-                    // User is authenticated, store in sessionStorage and redirect
-                    sessionStorage.setItem('authToken', data.user.token);
-                    sessionStorage.setItem('screenName', data.user.screenName);
-                    sessionStorage.setItem('actorId', data.user.actorId);
-                    sessionStorage.setItem('provider', data.user.provider);
+                    // User is authenticated, store in localStorage and redirect
+                    localStorage.setItem('authToken', data.user.token);
+                    localStorage.setItem('screenName', data.user.screenName);
+                    localStorage.setItem('actorId', data.user.actorId);
+                    localStorage.setItem('provider', data.user.provider);
                     if (data.user.avatarUrl) {
-                        sessionStorage.setItem('avatarUrl', data.user.avatarUrl);
+                        localStorage.setItem('avatarUrl', data.user.avatarUrl);
                     }
 
                     // Check if redirecting to a specific document

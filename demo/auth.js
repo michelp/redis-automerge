@@ -113,11 +113,11 @@ const Auth = {
             }
 
             // Clean up session storage
-            sessionStorage.removeItem('authToken');
-            sessionStorage.removeItem('screenName');
-            sessionStorage.removeItem('actorId');
-            sessionStorage.removeItem('provider');
-            sessionStorage.removeItem('avatarUrl');
+            localStorage.removeItem('authToken');
+            localStorage.removeItem('screenName');
+            localStorage.removeItem('actorId');
+            localStorage.removeItem('provider');
+            localStorage.removeItem('avatarUrl');
 
             return true;
         } catch (error) {
@@ -131,10 +131,10 @@ const Auth = {
      * @returns {Promise<{token: string, screenName: string, actorId: string} | null>}
      */
     async requireAuth() {
-        // Check sessionStorage first
-        const token = sessionStorage.getItem('authToken');
-        const screenName = sessionStorage.getItem('screenName');
-        const actorId = sessionStorage.getItem('actorId');
+        // Check localStorage first
+        const token = localStorage.getItem('authToken');
+        const screenName = localStorage.getItem('screenName');
+        const actorId = localStorage.getItem('actorId');
 
         if (token && screenName && actorId) {
             // Verify token is still valid
@@ -147,13 +147,13 @@ const Auth = {
         // Check if we have a server session
         const session = await this.checkSession();
         if (session.authenticated && session.user) {
-            // Store in sessionStorage
-            sessionStorage.setItem('authToken', session.user.token);
-            sessionStorage.setItem('screenName', session.user.screenName);
-            sessionStorage.setItem('actorId', session.user.actorId);
-            sessionStorage.setItem('provider', session.user.provider);
+            // Store in localStorage
+            localStorage.setItem('authToken', session.user.token);
+            localStorage.setItem('screenName', session.user.screenName);
+            localStorage.setItem('actorId', session.user.actorId);
+            localStorage.setItem('provider', session.user.provider);
             if (session.user.avatarUrl) {
-                sessionStorage.setItem('avatarUrl', session.user.avatarUrl);
+                localStorage.setItem('avatarUrl', session.user.avatarUrl);
             }
 
             return {
