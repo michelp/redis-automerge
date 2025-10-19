@@ -72,7 +72,7 @@
 
 pub mod ext;
 
-use std::os::raw::{c_int, c_void};
+use std::os::raw::{c_char, c_int, c_void};
 
 use automerge::{Change, ChangeHash};
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
@@ -91,7 +91,7 @@ static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
         version: raw::REDISMODULE_TYPE_METHOD_VERSION as u64,
         rdb_load: Some(am_rdb_load),
         rdb_save: Some(am_rdb_save),
-        aof_rewrite: None,
+        aof_rewrite: Some(am_aof_rewrite),  // Emit AM.LOAD commands for AOF rewrite
         free: Some(am_free),
         mem_usage: None,
         digest: None,
@@ -728,6 +728,32 @@ unsafe extern "C" fn am_rdb_load(rdb: *mut raw::RedisModuleIO, _encver: c_int) -
         },
         Err(_) => std::ptr::null_mut(),
     }
+}
+
+/// # Safety
+/// This function is called by Redis during AOF rewrite.
+/// The caller (Redis) must ensure all pointers are valid.
+///
+/// This emits an AM.LOAD command to recreate the document state.
+/// Works with aof-use-rdb-preamble=no (command-based AOF).
+unsafe extern "C" fn am_aof_rewrite(
+    aof: *mut raw::RedisModuleIO,
+    key: *mut raw::RedisModuleString,
+    value: *mut c_void,
+) {
+    let client = &*(value.cast::<RedisAutomergeClient>());
+    let data = client.save();
+
+    // Emit: AM.LOAD <key> <binary-data>
+    // Format string: "sb" = string (key), binary (data)
+    raw::RedisModule_EmitAOF.unwrap()(
+        aof,
+        b"AM.LOAD\0".as_ptr() as *const c_char,
+        b"sb\0".as_ptr() as *const c_char,
+        key,
+        data.as_ptr() as *const c_char,
+        data.len(),
+    );
 }
 
 #[cfg(not(test))]

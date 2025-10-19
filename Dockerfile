@@ -28,4 +28,11 @@ CMD ["redis-server", \
      "--logfile", "", \
      "--slowlog-log-slower-than", "0", \
      "--slowlog-max-len", "128", \
-     "--notify-keyspace-events", "KEA"]
+     "--notify-keyspace-events", "KEA", \
+     "--dir", "/data", \
+     "--save", "", \
+     "--appendonly", "yes", \
+     "--appendfilename", "appendonly.aof", \
+     "--appendfsync", "everysec", \
+     "--aof-use-rdb-preamble", "no", \
+     "--enable-debug-command", "yes"]
