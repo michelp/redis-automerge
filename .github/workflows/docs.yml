@@ -9,9 +9,6 @@ on:
 permissions:
   contents: write
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   build-docs:
     name: Build Documentation
@@ -20,38 +17,54 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-docs-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-docs-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install dependencies
+      - name: Build documentation using Docker
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
+          # Create a Dockerfile for building docs
+          cat > Dockerfile.docs <<'EOF'
+          FROM rust:1
 
-      - name: Build documentation
-        run: cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml
+          # Install dependencies
+          RUN apt-get update && apt-get install -y clang git && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /build
+
+          # Clone automerge source
+          RUN git clone --depth 1 --branch js/automerge-3.1.2 https://github.com/automerge/automerge.git /build/automerge-src
+
+          # Copy project files
+          COPY redis-automerge/ ./redis-automerge/
+
+          # Update Cargo.toml to use local automerge
+          RUN cd redis-automerge && \
+              sed -i 's|automerge = ".*"|automerge = { path = "/build/automerge-src/rust/automerge" }|' Cargo.toml
+
+          # Build documentation
+          RUN cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml
+          EOF
+
+          # Build the docs image
+          docker build -f Dockerfile.docs -t redis-automerge-docs .
+
+          # Create a container and extract the docs
+          docker create --name docs-container redis-automerge-docs
+          docker cp docs-container:/build/redis-automerge/target/doc ./doc
+          docker rm docs-container
+
+          # Clean up
+          rm Dockerfile.docs
 
       - name: Add index redirect
         run: |
-          echo '<meta http-equiv="refresh" content="0; url=redis_automerge/index.html">' > redis-automerge/target/doc/index.html
+          echo '<meta http-equiv="refresh" content="0; url=redis_automerge/index.html">' > doc/index.html
 
       - name: Upload documentation artifact
         uses: actions/upload-artifact@v4
         with:
           name: documentation
-          path: redis-automerge/target/doc
+          path: doc
           retention-days: 7
 
       - name: Deploy to GitHub Pages
@@ -59,7 +72,7 @@ jobs:
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: redis-automerge/target/doc
+          publish_dir: doc
           force_orphan: true
 
   check-docs:
@@ -69,22 +82,53 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Check documentation builds without warnings
-        run: cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml 2>&1 | tee doc-output.txt
+        run: |
+          # Create a Dockerfile for checking docs
+          cat > Dockerfile.docs <<'EOF'
+          FROM rust:1
+
+          # Install dependencies
+          RUN apt-get update && apt-get install -y clang git && rm -rf /var/lib/apt/lists/*
+
+          WORKDIR /build
+
+          # Clone automerge source
+          RUN git clone --depth 1 --branch js/automerge-3.1.2 https://github.com/automerge/automerge.git /build/automerge-src
+
+          # Copy project files
+          COPY redis-automerge/ ./redis-automerge/
+
+          # Update Cargo.toml to use local automerge
+          RUN cd redis-automerge && \
+              sed -i 's|automerge = ".*"|automerge = { path = "/build/automerge-src/rust/automerge" }|' Cargo.toml
+
+          # Build documentation and capture output
+          RUN cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml 2>&1 | tee /build/doc-output.txt
+          EOF
+
+          # Build the docs image
+          docker build -f Dockerfile.docs -t redis-automerge-docs-check . 2>&1 | tee build-output.txt
+
+          # Create a container and extract the log
+          docker create --name docs-check-container redis-automerge-docs-check
+          docker cp docs-check-container:/build/doc-output.txt ./doc-output.txt || echo "No doc output file found"
+          docker rm docs-check-container
+
+          # Clean up
+          rm Dockerfile.docs
 
       - name: Check for documentation warnings
         run: |
-          if grep -q "warning:" doc-output.txt; then
+          if [ -f doc-output.txt ] && grep -q "warning:" doc-output.txt; then
             echo "⚠️  Documentation has warnings (non-blocking)"
             grep "warning:" doc-output.txt || true
+          elif grep -q "warning:" build-output.txt; then
+            echo "⚠️  Documentation has warnings (non-blocking)"
+            grep "warning:" build-output.txt || true
           else
             echo "✅ Documentation builds without warnings"
           fi
