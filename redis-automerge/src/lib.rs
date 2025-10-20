@@ -15,6 +15,8 @@
 //! - `AM.SAVE <key>` - Save a document to binary format
 //! - `AM.APPLY <key> <change>...` - Apply Automerge changes to a document
 //! - `AM.CHANGES <key> [<hash>...]` - Get changes not in the provided hash list (empty = all changes)
+//! - `AM.TOJSON <key> [pretty]` - Export document to JSON format
+//! - `AM.FROMJSON <key> <json>` - Create document from JSON format
 //!
 //! ## Value Operations
 //! - `AM.PUTTEXT <key> <path> <value>` - Set a text value
@@ -699,6 +701,60 @@ fn am_changes(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::Array(result))
 }
 
+fn am_tojson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.TOJSON <key> [pretty]
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+
+    // Parse optional "pretty" parameter
+    let pretty = if args.len() == 3 {
+        let pretty_str = parse_utf8_field(&args[2], "pretty")?;
+        match pretty_str.to_lowercase().as_str() {
+            "true" | "1" | "yes" => true,
+            "false" | "0" | "no" => false,
+            _ => return Err(RedisError::Str("pretty must be true/false, 1/0, or yes/no")),
+        }
+    } else {
+        false // Default to compact JSON
+    };
+
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    let json = client
+        .to_json(pretty)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    Ok(RedisValue::BulkString(json))
+}
+
+fn am_fromjson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.FROMJSON <key> <json>
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let json = parse_utf8_value(&args[2])?;
+
+    // Create new document from JSON
+    let client = RedisAutomergeClient::from_json(json)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Store the document at the key
+    let key = ctx.open_key_writable(key_name);
+    key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
+
+    // Replicate and notify
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.fromjson", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.fromjson", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
 /// # Safety
 /// This function is called by Redis when freeing a RedisAutomergeClient value.
 /// The caller (Redis) must ensure that `value` is a valid pointer to a
@@ -769,6 +825,8 @@ redis_module! {
         ["am.save", am_save, "readonly", 1, 1, 1],
         ["am.apply", am_apply, "write deny-oom", 1, 1, 1],
         ["am.changes", am_changes, "readonly", 1, 1, 1],
+        ["am.tojson", am_tojson, "readonly", 1, 1, 1],
+        ["am.fromjson", am_fromjson, "write deny-oom", 1, 1, 1],
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
         ["am.putdiff", am_putdiff, "write deny-oom", 1, 1, 1],
@@ -1450,5 +1508,293 @@ mod tests {
 
         // Should return only the second change
         assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn to_json_empty_document() {
+        let client = RedisAutomergeClient::new();
+        let json = client.to_json(false).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn to_json_simple_types() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_text("name", "Alice").unwrap();
+        client.put_int("age", 30).unwrap();
+        client.put_double("score", 95.5).unwrap();
+        client.put_bool("active", true).unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["name"], "Alice");
+        assert_eq!(parsed["age"], 30);
+        assert_eq!(parsed["score"], 95.5);
+        assert_eq!(parsed["active"], true);
+    }
+
+    #[test]
+    fn to_json_nested_objects() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_text("user.profile.name", "Bob").unwrap();
+        client.put_int("user.profile.age", 25).unwrap();
+        client.put_text("user.email", "bob@example.com").unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["user"]["profile"]["name"], "Bob");
+        assert_eq!(parsed["user"]["profile"]["age"], 25);
+        assert_eq!(parsed["user"]["email"], "bob@example.com");
+    }
+
+    #[test]
+    fn to_json_with_lists() {
+        let mut client = RedisAutomergeClient::new();
+        client.create_list("tags").unwrap();
+        client.append_text("tags", "redis").unwrap();
+        client.append_text("tags", "crdt").unwrap();
+        client.append_text("tags", "rust").unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["tags"].as_array().unwrap().len(), 3);
+        assert_eq!(parsed["tags"][0], "redis");
+        assert_eq!(parsed["tags"][1], "crdt");
+        assert_eq!(parsed["tags"][2], "rust");
+    }
+
+    #[test]
+    fn to_json_mixed_list_types() {
+        let mut client = RedisAutomergeClient::new();
+        client.create_list("mixed").unwrap();
+        client.append_text("mixed", "text").unwrap();
+        client.append_int("mixed", 42).unwrap();
+        client.append_double("mixed", 3.14).unwrap();
+        client.append_bool("mixed", true).unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["mixed"][0], "text");
+        assert_eq!(parsed["mixed"][1], 42);
+        assert_eq!(parsed["mixed"][2], 3.14);
+        assert_eq!(parsed["mixed"][3], true);
+    }
+
+    #[test]
+    fn to_json_pretty_formatting() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_text("name", "Alice").unwrap();
+        client.put_int("age", 30).unwrap();
+
+        let compact = client.to_json(false).unwrap();
+        let pretty = client.to_json(true).unwrap();
+
+        // Compact should have no newlines
+        assert!(!compact.contains('\n'));
+
+        // Pretty should have newlines and indentation
+        assert!(pretty.contains('\n'));
+        assert!(pretty.contains("  ")); // indentation
+
+        // Both should parse to the same value
+        let compact_parsed: serde_json::Value = serde_json::from_str(&compact).unwrap();
+        let pretty_parsed: serde_json::Value = serde_json::from_str(&pretty).unwrap();
+        assert_eq!(compact_parsed, pretty_parsed);
+    }
+
+    #[test]
+    fn to_json_complex_structure() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Create a complex document
+        client.put_text("user.name", "Alice").unwrap();
+        client.put_int("user.age", 30).unwrap();
+        client.create_list("user.hobbies").unwrap();
+        client.append_text("user.hobbies", "reading").unwrap();
+        client.append_text("user.hobbies", "coding").unwrap();
+        client.put_text("config.database.host", "localhost").unwrap();
+        client.put_int("config.database.port", 5432).unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed["user"]["name"], "Alice");
+        assert_eq!(parsed["user"]["age"], 30);
+        assert_eq!(parsed["user"]["hobbies"][0], "reading");
+        assert_eq!(parsed["user"]["hobbies"][1], "coding");
+        assert_eq!(parsed["config"]["database"]["host"], "localhost");
+        assert_eq!(parsed["config"]["database"]["port"], 5432);
+    }
+
+    #[test]
+    fn to_json_persistence_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_text("name", "Charlie").unwrap();
+        client.put_int("count", 100).unwrap();
+        client.create_list("items").unwrap();
+        client.append_text("items", "a").unwrap();
+        client.append_text("items", "b").unwrap();
+
+        // Save and reload
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+
+        // JSON should be identical
+        let original_json = client.to_json(false).unwrap();
+        let loaded_json = loaded.to_json(false).unwrap();
+        assert_eq!(original_json, loaded_json);
+    }
+
+    #[test]
+    fn from_json_simple_types() {
+        let json = r#"{"name":"Alice","age":30,"score":95.5,"active":true}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        assert_eq!(client.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client.get_int("age").unwrap(), Some(30));
+        assert_eq!(client.get_double("score").unwrap(), Some(95.5));
+        assert_eq!(client.get_bool("active").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn from_json_nested_objects() {
+        let json = r#"{"user":{"profile":{"name":"Bob","age":25},"email":"bob@example.com"}}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        assert_eq!(
+            client.get_text("user.profile.name").unwrap(),
+            Some("Bob".to_string())
+        );
+        assert_eq!(client.get_int("user.profile.age").unwrap(), Some(25));
+        assert_eq!(
+            client.get_text("user.email").unwrap(),
+            Some("bob@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn from_json_arrays() {
+        let json = r#"{"tags":["redis","crdt","rust"]}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        assert_eq!(client.list_len("tags").unwrap(), Some(3));
+        assert_eq!(
+            client.get_text("tags[0]").unwrap(),
+            Some("redis".to_string())
+        );
+        assert_eq!(
+            client.get_text("tags[1]").unwrap(),
+            Some("crdt".to_string())
+        );
+        assert_eq!(
+            client.get_text("tags[2]").unwrap(),
+            Some("rust".to_string())
+        );
+    }
+
+    #[test]
+    fn from_json_mixed_list_types() {
+        let json = r#"{"mixed":["text",42,3.14,true]}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        assert_eq!(
+            client.get_text("mixed[0]").unwrap(),
+            Some("text".to_string())
+        );
+        assert_eq!(client.get_int("mixed[1]").unwrap(), Some(42));
+        assert_eq!(client.get_double("mixed[2]").unwrap(), Some(3.14));
+        assert_eq!(client.get_bool("mixed[3]").unwrap(), Some(true));
+    }
+
+    #[test]
+    fn from_json_complex_structure() {
+        let json = r#"{
+            "user": {
+                "name": "Alice",
+                "age": 30,
+                "hobbies": ["reading", "coding"]
+            },
+            "config": {
+                "database": {
+                    "host": "localhost",
+                    "port": 5432
+                }
+            }
+        }"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        assert_eq!(
+            client.get_text("user.name").unwrap(),
+            Some("Alice".to_string())
+        );
+        assert_eq!(client.get_int("user.age").unwrap(), Some(30));
+        assert_eq!(
+            client.get_text("user.hobbies[0]").unwrap(),
+            Some("reading".to_string())
+        );
+        assert_eq!(
+            client.get_text("user.hobbies[1]").unwrap(),
+            Some("coding".to_string())
+        );
+        assert_eq!(
+            client.get_text("config.database.host").unwrap(),
+            Some("localhost".to_string())
+        );
+        assert_eq!(client.get_int("config.database.port").unwrap(), Some(5432));
+    }
+
+    #[test]
+    fn from_json_to_json_roundtrip() {
+        let original_json = r#"{"name":"Alice","age":30,"tags":["rust","redis"]}"#;
+        let client = RedisAutomergeClient::from_json(original_json).unwrap();
+
+        // Convert back to JSON
+        let exported_json = client.to_json(false).unwrap();
+        let exported_value: serde_json::Value = serde_json::from_str(&exported_json).unwrap();
+        let original_value: serde_json::Value = serde_json::from_str(original_json).unwrap();
+
+        // Should be semantically equivalent
+        assert_eq!(exported_value, original_value);
+    }
+
+    #[test]
+    fn from_json_with_null() {
+        let json = r#"{"field":null}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        // Accessing a null field should return None
+        assert_eq!(client.get_text("field").unwrap(), None);
+    }
+
+    #[test]
+    fn from_json_invalid_json() {
+        let invalid_json = r#"{"name": "Alice""#; // Missing closing brace
+        let result = RedisAutomergeClient::from_json(invalid_json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_json_non_object_root() {
+        // Root must be an object, not a primitive
+        let result = RedisAutomergeClient::from_json(r#""just a string""#);
+        assert!(result.is_err());
+
+        // Root must be an object, not an array
+        let result = RedisAutomergeClient::from_json(r#"["array","root"]"#);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn from_json_empty_object() {
+        let json = r#"{}"#;
+        let client = RedisAutomergeClient::from_json(json).unwrap();
+
+        // Converting empty document to JSON should give back empty object
+        let exported = client.to_json(false).unwrap();
+        assert_eq!(exported, "{}");
     }
 }

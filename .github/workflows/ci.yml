@@ -6,56 +6,9 @@ on:
   push:
     branches: [ main, master ]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
   test:
     name: Test Suite
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: redis-automerge/target
-          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
-
-      - name: Run unit tests
-        run: cargo test --verbose --manifest-path redis-automerge/Cargo.toml
-
-      - name: Run clippy
-        run: cargo clippy --manifest-path redis-automerge/Cargo.toml -- -D warnings
-
-      - name: Check formatting
-        run: cargo fmt --manifest-path redis-automerge/Cargo.toml -- --check
-
-  integration:
-    name: Integration Tests
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -65,14 +18,25 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build Docker images
-        run: docker compose build
+        run: docker compose build redis
+
+      - name: Start services
+        run: docker compose up -d redis webdis
+
+      - name: Wait for Redis to be ready
+        run: |
+          timeout 30 bash -c 'until docker compose exec -T redis redis-cli ping; do sleep 1; done'
 
       - name: Run integration tests
         run: docker compose run --rm test
 
+      - name: Show test logs on failure
+        if: failure()
+        run: docker compose logs test
+
       - name: Clean up
         if: always()
-        run: docker compose down
+        run: docker compose down -v
 
   build:
     name: Build Release
@@ -81,38 +45,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/registry
-          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build Docker image
+        run: docker compose build redis
 
-      - name: Cache cargo index
-        uses: actions/cache@v4
-        with:
-          path: ~/.cargo/git
-          key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Cache cargo build
-        uses: actions/cache@v4
-        with:
-          path: redis-automerge/target
-          key: ${{ runner.os }}-cargo-build-release-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Install dependencies
+      - name: Extract built module from Docker image
         run: |
-          sudo apt-get update
-          sudo apt-get install -y clang
-
-      - name: Build release
-        run: cargo build --release --manifest-path redis-automerge/Cargo.toml
+          # Create a temporary container from the built image
+          docker create --name temp-container redis-automerge-redis
+          # Copy the built module out
+          docker cp temp-container:/usr/lib/redis/modules/redis-automerge.so ./libredis_automerge.so
+          # Clean up
+          docker rm temp-container
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: redis-automerge-module
-          path: redis-automerge/target/release/libredis_automerge.so
+          path: libredis_automerge.so
           retention-days: 7

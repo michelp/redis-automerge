@@ -1539,6 +1539,291 @@ impl RedisAutomergeClient {
 
         Ok(None)
     }
+
+    /// Convert the entire Automerge document to JSON.
+    ///
+    /// Recursively traverses the document starting from ROOT and converts all
+    /// values to JSON format. Supports both compact and pretty-printed output.
+    ///
+    /// # Arguments
+    ///
+    /// * `pretty` - If true, output formatted JSON with indentation. If false, compact JSON.
+    ///
+    /// # Returns
+    ///
+    /// A JSON string representation of the document.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("name", "Alice").unwrap();
+    /// client.put_int("age", 30).unwrap();
+    ///
+    /// // Compact JSON
+    /// let json = client.to_json(false).unwrap();
+    /// // Returns: {"name":"Alice","age":30}
+    ///
+    /// // Pretty JSON
+    /// let json = client.to_json(true).unwrap();
+    /// // Returns:
+    /// // {
+    /// //   "name": "Alice",
+    /// //   "age": 30
+    /// // }
+    /// ```
+    pub fn to_json(&self, pretty: bool) -> Result<String, AutomergeError> {
+        use serde_json::{Map, Value as JsonValue};
+
+        // Helper function to recursively convert an Automerge object to JSON
+        fn obj_to_json(doc: &Automerge, obj_id: &ObjId) -> Result<JsonValue, AutomergeError> {
+            // Check the object type
+            let obj_type = doc.object_type(obj_id)?;
+
+            match obj_type {
+                automerge::ObjType::Map => {
+                    let mut map = Map::new();
+                    // Iterate over all keys in the map
+                    for key in doc.keys(obj_id) {
+                        if let Some((value, value_obj_id)) = doc.get(obj_id, &key)? {
+                            let json_value = value_to_json(doc, &value, &value_obj_id)?;
+                            map.insert(key.to_string(), json_value);
+                        }
+                    }
+                    Ok(JsonValue::Object(map))
+                }
+                automerge::ObjType::List => {
+                    let mut arr = Vec::new();
+                    let len = doc.length(obj_id);
+                    for i in 0..len {
+                        if let Some((value, value_obj_id)) = doc.get(obj_id, i)? {
+                            let json_value = value_to_json(doc, &value, &value_obj_id)?;
+                            arr.push(json_value);
+                        }
+                    }
+                    Ok(JsonValue::Array(arr))
+                }
+                automerge::ObjType::Text => {
+                    // Text objects are converted to strings
+                    let text = doc.text(obj_id)?;
+                    Ok(JsonValue::String(text))
+                }
+                _ => {
+                    // Unknown object type, treat as null
+                    Ok(JsonValue::Null)
+                }
+            }
+        }
+
+        // Helper function to convert an Automerge value to JSON
+        fn value_to_json(
+            doc: &Automerge,
+            value: &Value,
+            obj_id: &ObjId,
+        ) -> Result<JsonValue, AutomergeError> {
+            match value {
+                Value::Object(_) => {
+                    // Recursively convert nested objects
+                    obj_to_json(doc, obj_id)
+                }
+                Value::Scalar(scalar) => {
+                    let s = scalar.as_ref();
+                    match s {
+                        ScalarValue::Str(s) => Ok(JsonValue::String(s.to_string())),
+                        ScalarValue::Int(i) => Ok(JsonValue::Number((*i).into())),
+                        ScalarValue::F64(f) => {
+                            if let Some(num) = serde_json::Number::from_f64(*f) {
+                                Ok(JsonValue::Number(num))
+                            } else {
+                                Ok(JsonValue::Null)
+                            }
+                        }
+                        ScalarValue::Boolean(b) => Ok(JsonValue::Bool(*b)),
+                        ScalarValue::Null => Ok(JsonValue::Null),
+                        _ => Ok(JsonValue::Null),
+                    }
+                }
+            }
+        }
+
+        // Start conversion from ROOT
+        let json_value = obj_to_json(&self.doc, &ROOT)?;
+
+        // Serialize to string
+        if pretty {
+            serde_json::to_string_pretty(&json_value).map_err(|_| AutomergeError::Fail)
+        } else {
+            serde_json::to_string(&json_value).map_err(|_| AutomergeError::Fail)
+        }
+    }
+
+    /// Create a new Automerge document from a JSON string.
+    ///
+    /// Parses the JSON string and recursively converts it to Automerge document structure:
+    /// - JSON objects become Automerge Maps
+    /// - JSON arrays become Automerge Lists
+    /// - JSON strings become text values
+    /// - JSON numbers become integers (if no decimal) or doubles
+    /// - JSON booleans become boolean values
+    /// - JSON null becomes null
+    ///
+    /// This replaces the entire document with the structure from the JSON.
+    ///
+    /// # Arguments
+    ///
+    /// * `json` - JSON string to parse and convert
+    ///
+    /// # Returns
+    ///
+    /// A new `RedisAutomergeClient` with the document initialized from JSON.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let json = r#"{"name":"Alice","age":30,"active":true}"#;
+    /// let client = RedisAutomergeClient::from_json(json).unwrap();
+    ///
+    /// assert_eq!(client.get_text("name").unwrap(), Some("Alice".to_string()));
+    /// assert_eq!(client.get_int("age").unwrap(), Some(30));
+    /// assert_eq!(client.get_bool("active").unwrap(), Some(true));
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the JSON string cannot be parsed or converted to Automerge format.
+    pub fn from_json(json: &str) -> Result<Self, AutomergeError> {
+        use serde_json::Value as JsonValue;
+
+        // Parse JSON string
+        let json_value: JsonValue = serde_json::from_str(json).map_err(|_| AutomergeError::Fail)?;
+
+        // Create new document
+        let mut client = Self::new();
+        let mut tx = client.doc.transaction();
+
+        // Helper function to recursively populate an Automerge object from JSON
+        fn populate_from_json<T: Transactable>(
+            tx: &mut T,
+            parent: &ObjId,
+            key_or_index: KeyOrIndex,
+            value: &JsonValue,
+        ) -> Result<(), AutomergeError> {
+            match value {
+                JsonValue::Object(map) => {
+                    // Create a Map object
+                    let obj_id = match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            tx.put_object(parent, key.as_str(), automerge::ObjType::Map)?
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            tx.put_object(parent, idx, automerge::ObjType::Map)?
+                        }
+                    };
+                    // Recursively populate the map
+                    for (k, v) in map {
+                        populate_from_json(tx, &obj_id, KeyOrIndex::Key(k.clone()), v)?;
+                    }
+                }
+                JsonValue::Array(arr) => {
+                    // Create a List object
+                    let obj_id = match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            tx.put_object(parent, key.as_str(), automerge::ObjType::List)?
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            tx.put_object(parent, idx, automerge::ObjType::List)?
+                        }
+                    };
+                    // Append elements to the list
+                    for (i, v) in arr.iter().enumerate() {
+                        populate_from_json(tx, &obj_id, KeyOrIndex::Index(i), v)?;
+                    }
+                }
+                JsonValue::String(s) => {
+                    // Insert as text value
+                    match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            tx.put(parent, key.as_str(), s.as_str())?;
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            tx.insert(parent, idx, s.as_str())?;
+                        }
+                    }
+                }
+                JsonValue::Number(n) => {
+                    // Convert to int or double
+                    match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            if let Some(i) = n.as_i64() {
+                                tx.put(parent, key.as_str(), i)?;
+                            } else if let Some(f) = n.as_f64() {
+                                tx.put(parent, key.as_str(), f)?;
+                            }
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            if let Some(i) = n.as_i64() {
+                                tx.insert(parent, idx, i)?;
+                            } else if let Some(f) = n.as_f64() {
+                                tx.insert(parent, idx, f)?;
+                            }
+                        }
+                    }
+                }
+                JsonValue::Bool(b) => {
+                    // Insert as boolean
+                    match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            tx.put(parent, key.as_str(), *b)?;
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            tx.insert(parent, idx, *b)?;
+                        }
+                    }
+                }
+                JsonValue::Null => {
+                    // Insert as null
+                    match key_or_index {
+                        KeyOrIndex::Key(key) => {
+                            tx.put(parent, key.as_str(), ScalarValue::Null)?;
+                        }
+                        KeyOrIndex::Index(idx) => {
+                            tx.insert(parent, idx, ScalarValue::Null)?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        // Helper enum to handle both keys and indices
+        enum KeyOrIndex {
+            Key(String),
+            Index(usize),
+        }
+
+        // Start populating from root
+        if let JsonValue::Object(map) = &json_value {
+            for (k, v) in map {
+                populate_from_json(&mut tx, &ROOT, KeyOrIndex::Key(k.clone()), v)?;
+            }
+        } else {
+            // If root is not an object, we can't convert it directly
+            return Err(AutomergeError::Fail);
+        }
+
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = client.doc.get_change_by_hash(&h) {
+                client.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+
+        Ok(client)
+    }
 }
 
 impl Default for RedisAutomergeClient {
