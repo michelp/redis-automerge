@@ -91,9 +91,10 @@ const EditorCore = {
     /**
      * Initialize a new Automerge document in Redis.
      * @param {string} docKey - The document key
+     * @param {string} title - The document title
      * @returns {Promise<boolean>} True if successful
      */
-    async initializeDocument(docKey) {
+    async initializeDocument(docKey, title = 'Untitled Document') {
         try {
             this.log(`Initializing document: ${docKey}`, 'server');
 
@@ -101,6 +102,11 @@ const EditorCore = {
             const newResponse = await fetch(`${this.WEBDIS_URL}/AM.NEW/${docKey}`);
             const newData = await newResponse.json();
             this.log(`Document created in Redis: ${JSON.stringify(newData)}`, 'server');
+
+            // Initialize the title field
+            const titleResponse = await fetch(`${this.WEBDIS_URL}/AM.PUTTEXT/${docKey}/title/${encodeURIComponent(title)}`);
+            const titleData = await titleResponse.json();
+            this.log(`Title field initialized: ${JSON.stringify(titleData)}`, 'server');
 
             // Initialize the text field with empty string
             const initResponse = await fetch(`${this.WEBDIS_URL}/AM.PUTTEXT/${docKey}/text/`);
@@ -229,12 +235,14 @@ const ShareableMode = {
     socket: null,
     documentListSocket: null,
     prevText: '',
-    currentDocument: null,
+    currentDocument: null, // Current document UUID
+    currentDocumentTitle: null, // Current document title
     documentList: [],
-    documentPeers: {}, // Track peers by document: { documentName: Set of actorIds }
-    documentActivity: {}, // Track last activity timestamp by document: { documentName: timestamp }
+    documentPeers: {}, // Track peers by document: { documentId: Set of actorIds }
+    documentActivity: {}, // Track last activity timestamp by document: { documentId: timestamp }
     _currentHandler: null,
     _blurHandler: null,
+    _titleHandler: null,
     _refreshDebounce: null,
     refreshInterval: null,
     heartbeatInterval: null,
@@ -278,8 +286,9 @@ const ShareableMode = {
      * Display user info with OAuth provider information
      */
     displayUserInfo() {
-        const provider = localStorage.getItem('provider') || 'oauth';
-        const avatarUrl = localStorage.getItem('avatarUrl');
+        // Use instance variables (no localStorage - security: prevent XSS token theft)
+        const provider = this.provider || 'oauth';
+        const avatarUrl = this.avatarUrl;
 
         // Create user info HTML with avatar if available
         let userInfoHtml = `<span style="font-weight: 600;">${this.screenName}</span>`;
@@ -316,10 +325,12 @@ const ShareableMode = {
             return;
         }
 
-        // Store user credentials
+        // Store user credentials (no localStorage - security: prevent XSS token theft)
         this.screenName = auth.screenName;
         this.stableActorId = auth.actorId;
         this.authToken = auth.token;
+        this.provider = auth.provider;
+        this.avatarUrl = auth.avatarUrl || '';
 
         EditorCore.log(`Logged in as: ${this.screenName} (actor: ${this.stableActorId.slice(0, 8)}...)`, 'shareable');
 
@@ -358,59 +369,70 @@ const ShareableMode = {
     },
 
     /**
-     * Create a new document with custom name
+     * Generate a UUID v4
+     * @returns {string} UUID
+     */
+    generateUUID() {
+        // Use crypto.randomUUID() if available (modern browsers)
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+            return crypto.randomUUID();
+        }
+        // Fallback for older browsers
+        return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            const r = Math.random() * 16 | 0;
+            const v = c === 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+    },
+
+    /**
+     * Create a new document with custom title
      */
     async createCustomDocument() {
         const input = document.getElementById('custom-document-name');
-        const documentName = input.value.trim();
+        const title = input.value.trim();
 
-        if (!documentName) {
-            alert('Please enter a document name');
+        if (!title) {
+            alert('Please enter a document title');
             return;
         }
 
-        if (!this.validateDocumentName(documentName)) {
-            alert('Document name must be 1-50 characters (letters, numbers, dash, underscore only)');
+        if (title.length > 100) {
+            alert('Document title must be 100 characters or less');
             return;
         }
 
         input.value = '';
-        await this.createDocument(documentName);
-    },
 
-    /**
-     * Validate document name format
-     * @param {string} name - Document name to validate
-     * @returns {boolean} True if valid
-     */
-    validateDocumentName(name) {
-        return /^[a-zA-Z0-9_-]{1,50}$/.test(name);
+        // Generate UUID for document ID
+        const documentId = this.generateUUID();
+
+        await this.createDocument(documentId, title);
     },
 
     /**
      * Create a new document
-     * @param {string} documentName - The document name
+     * @param {string} documentId - The document UUID
+     * @param {string} title - The document title
      */
-    async createDocument(documentName) {
-        const docKey = `am:document:${documentName}`;
+    async createDocument(documentId, title = 'Untitled Document') {
+        const docKey = `am:document:${documentId}`;
 
-        EditorCore.log(`Creating document: ${documentName}`, 'shareable');
+        EditorCore.log(`Creating document: ${title} (${documentId})`, 'shareable');
 
-        // Check if document already exists
+        // Check if document already exists (shouldn't happen with UUIDs, but check anyway)
         const exists = await this.checkDocumentExists(docKey);
         if (exists) {
-            const join = confirm(`Document "${documentName}" already exists. Join instead?`);
-            if (join) {
-                await this.joinDocument(documentName);
-            }
+            EditorCore.log(`Document ${documentId} already exists, joining instead`, 'shareable');
+            await this.joinDocument(documentId);
             return;
         }
 
         // Create the document
-        const success = await EditorCore.initializeDocument(docKey);
+        const success = await EditorCore.initializeDocument(docKey, title);
         if (success) {
-            EditorCore.log(`Document created: ${documentName}`, 'shareable');
-            await this.joinDocument(documentName);
+            EditorCore.log(`Document created: ${title}`, 'shareable');
+            await this.joinDocument(documentId);
         } else {
             alert('Failed to create document. Please try again.');
         }
@@ -434,12 +456,12 @@ const ShareableMode = {
 
     /**
      * Join an existing document
-     * @param {string} documentName - The document name
+     * @param {string} documentId - The document UUID
      */
-    async joinDocument(documentName) {
+    async joinDocument(documentId) {
         // Check if already in this document
-        if (this.currentDocument === documentName) {
-            EditorCore.log(`Already connected to document: ${documentName}`, 'shareable');
+        if (this.currentDocument === documentId) {
+            EditorCore.log(`Already connected to document: ${documentId}`, 'shareable');
             return;
         }
 
@@ -474,9 +496,9 @@ const ShareableMode = {
             this._displayedChatCount = 0;
         }
 
-        const docKey = `am:document:${documentName}`;
+        const docKey = `am:document:${documentId}`;
 
-        EditorCore.log(`Joining document: ${documentName}`, 'shareable');
+        EditorCore.log(`Joining document: ${documentId}`, 'shareable');
 
         // Load the document from Redis to ensure all clients share the same document history
         // Use .raw endpoint because Webdis .json endpoint can't handle binary data
@@ -513,6 +535,10 @@ const ShareableMode = {
                 // Convert Automerge Text object to plain string
                 const textValue = this.doc.text ? this.doc.text.toString() : '';
                 this.prevText = textValue;
+
+                // Load title from document
+                this.currentDocumentTitle = this.doc.title ? this.doc.title.toString() : 'Untitled Document';
+
                 EditorCore.log(`Loaded document from server (${actualDocBytes.length} bytes)`, 'shareable');
             } else {
                 console.error('[ShareableMode] Failed to load document, status:', response.status);
@@ -520,9 +546,11 @@ const ShareableMode = {
                 // Initialize document with our stable actor ID
                 const baseDoc = Automerge.init({ actorId: this.stableActorId });
                 this.doc = Automerge.change(baseDoc, doc => {
+                    doc.title = "Untitled Document";
                     doc.text = "";
                     doc.chat_history = [];
                 });
+                this.currentDocumentTitle = 'Untitled Document';
                 this.prevText = '';
             }
         } catch (error) {
@@ -531,9 +559,11 @@ const ShareableMode = {
             // Initialize document with our stable actor ID
             const baseDoc = Automerge.init({ actorId: this.stableActorId });
             this.doc = Automerge.change(baseDoc, doc => {
+                doc.title = "Untitled Document";
                 doc.text = "";
                 doc.chat_history = [];
             });
+            this.currentDocumentTitle = 'Untitled Document';
             this.prevText = '';
         }
 
@@ -586,17 +616,28 @@ const ShareableMode = {
             (command) => this.handleKeyspaceNotification(docKey, command)
         );
 
-        this.currentDocument = documentName;
+        this.currentDocument = documentId;
 
         // Announce presence immediately
-        await this.announcePresence(documentName);
+        await this.announcePresence(documentId);
 
         // Start heartbeat to maintain presence
-        this.startHeartbeat(documentName);
+        this.startHeartbeat(documentId);
 
         // Update UI
-        document.getElementById('current-document-name').textContent = documentName;
+        document.getElementById('current-document-name').textContent = this.currentDocumentTitle;
         document.getElementById('sync-status-shareable-editor').textContent = 'Syncing ✓';
+
+        // Set up title input
+        const titleInput = document.getElementById('document-title-input');
+        titleInput.value = this.currentDocumentTitle;
+        titleInput.disabled = false;
+
+        // Add title change listener (debounced)
+        const titleChangeHandler = EditorCore.debounce(() => this.handleTitleChange(), 500);
+        titleInput.removeEventListener('input', this._titleHandler);
+        this._titleHandler = titleChangeHandler;
+        titleInput.addEventListener('input', titleChangeHandler);
 
         // Set up editor event listener (remove old listener first to avoid duplicates)
         const editor = document.getElementById('editor-shareable');
@@ -623,11 +664,17 @@ const ShareableMode = {
         textarea.value = textToDisplay;
         this.prevText = textToDisplay;
 
-        EditorCore.log(`Connected to document: ${documentName}`, 'shareable');
+        // Update line numbers
+        this.updateLineNumbers();
+
+        // Set up scroll synchronization for line numbers
+        textarea.addEventListener('scroll', () => this.syncLineNumbersScroll());
+
+        EditorCore.log(`Connected to document: ${this.currentDocumentTitle} (${documentId})`, 'shareable');
 
         // Update URL without reloading
         const url = new URL(window.location);
-        url.searchParams.set('document', documentName);
+        url.searchParams.set('document', documentId);
         window.history.pushState({}, '', url);
 
         // Load and display history
@@ -1027,18 +1074,32 @@ const ShareableMode = {
      */
     handleIncomingMessage(messageData) {
         try {
-            // Get old text and chat history before applying change
+            // Get old text, title, and chat history before applying change
             const oldText = this.doc.text ? this.doc.text.toString() : '';
+            const oldTitle = this.doc.title ? this.doc.title.toString() : '';
             const oldChatLength = this.doc.chat_history ? this.doc.chat_history.length : 0;
 
             const changeBytes = Uint8Array.from(atob(messageData), c => c.charCodeAt(0));
             const [newDoc] = Automerge.applyChanges(this.doc, [changeBytes]);
 
-            // Get new text after applying change
+            // Get new text, title, and chat history after applying change
             const newText = newDoc.text ? newDoc.text.toString() : '';
+            const newTitle = newDoc.title ? newDoc.title.toString() : '';
             const newChatLength = newDoc.chat_history ? newDoc.chat_history.length : 0;
 
             this.doc = newDoc;
+
+            // Update title if it changed
+            if (newTitle !== oldTitle) {
+                this.currentDocumentTitle = newTitle;
+                document.getElementById('current-document-name').textContent = newTitle;
+                const titleInput = document.getElementById('document-title-input');
+                // Only update if user is not currently editing the title
+                if (document.activeElement !== titleInput) {
+                    titleInput.value = newTitle;
+                }
+                EditorCore.log(`Document title updated to: "${newTitle}"`, 'shareable');
+            }
 
             // Update screen name mappings from metadata
             if (this.doc.user_metadata) {
@@ -1145,6 +1206,9 @@ const ShareableMode = {
         // Update local UI
         this.updateDocInfo();
 
+        // Update line numbers after local edit
+        this.updateLineNumbers();
+
         // Update history sidebar with the local change
         const changeDetails = this.calculateChangeDetails(oldText, newText);
         const history = Automerge.getHistory(this.doc);
@@ -1162,6 +1226,52 @@ const ShareableMode = {
         setTimeout(() => {
             this.isLocallyEditing = false;
         }, 100);
+    },
+
+    /**
+     * Handle title changes from the title input
+     */
+    async handleTitleChange() {
+        if (!this.currentDocument) return;
+
+        const titleInput = document.getElementById('document-title-input');
+        const newTitle = titleInput.value.trim();
+
+        // Don't update if title hasn't actually changed
+        if (newTitle === this.currentDocumentTitle) {
+            return;
+        }
+
+        // Don't allow empty titles
+        if (!newTitle) {
+            titleInput.value = this.currentDocumentTitle;
+            return;
+        }
+
+        const docKey = `am:document:${this.currentDocument}`;
+
+        EditorCore.log(`Updating document title to: "${newTitle}"`, 'shareable');
+
+        // Apply change locally using Automerge
+        const oldDoc = this.doc;
+        const newDoc = Automerge.change(oldDoc, doc => {
+            doc.title = newTitle;
+        });
+
+        // Get the changes that were just created
+        const changes = Automerge.getChanges(oldDoc, newDoc);
+
+        // Update local document
+        this.doc = newDoc;
+        this.currentDocumentTitle = newTitle;
+
+        // Send changes to server via AM.APPLY
+        await this.applyChangesToServer(docKey, changes);
+
+        // Update UI
+        document.getElementById('current-document-name').textContent = newTitle;
+
+        EditorCore.log(`Document title updated successfully`, 'shareable');
     },
 
     /**
@@ -1240,6 +1350,9 @@ const ShareableMode = {
 
             this.prevText = newText;
             EditorCore.log(`Editor updated with remote changes`, 'shareable');
+
+            // Update line numbers after content change
+            this.updateLineNumbers();
         }
     },
 
@@ -1252,6 +1365,36 @@ const ShareableMode = {
         const history = Automerge.getHistory(this.doc);
         const textLength = this.doc.text ? this.doc.text.toString().length : 0;
         document.getElementById('doc-version-shareable').textContent = `v${history.length} (${textLength} chars)`;
+    },
+
+    /**
+     * Update line numbers based on textarea content
+     */
+    updateLineNumbers() {
+        const textarea = document.getElementById('editor-shareable');
+        const lineNumbersDiv = document.getElementById('line-numbers');
+
+        if (!textarea || !lineNumbersDiv) return;
+
+        const text = textarea.value;
+        const lines = text.split('\n');
+        const lineCount = lines.length;
+
+        // Generate line numbers
+        const lineNumbers = Array.from({ length: lineCount }, (_, i) => i + 1).join('\n');
+        lineNumbersDiv.textContent = lineNumbers;
+    },
+
+    /**
+     * Sync line numbers scroll with textarea scroll
+     */
+    syncLineNumbersScroll() {
+        const textarea = document.getElementById('editor-shareable');
+        const lineNumbersDiv = document.getElementById('line-numbers');
+
+        if (!textarea || !lineNumbersDiv) return;
+
+        lineNumbersDiv.scrollTop = textarea.scrollTop;
     },
 
     /**
@@ -1271,12 +1414,18 @@ const ShareableMode = {
 
         this.doc = null;
         this.currentDocument = null;
+        this.currentDocumentTitle = null;
         this.prevText = '';
 
         // Update UI
         document.getElementById('current-document-name').textContent = 'Not connected';
         document.getElementById('editor-shareable').value = '';
         document.getElementById('sync-status-shareable-editor').textContent = 'Not syncing';
+
+        // Disable and clear title input
+        const titleInput = document.getElementById('document-title-input');
+        titleInput.value = '';
+        titleInput.disabled = true;
 
         // Remove document from URL
         const url = new URL(window.location);
@@ -1334,6 +1483,60 @@ const ShareableMode = {
     },
 
     /**
+     * Delete the current document with confirmation
+     */
+    async deleteDocument() {
+        if (!this.currentDocument) {
+            alert('No document is currently open');
+            return;
+        }
+
+        const documentTitle = this.currentDocumentTitle || this.currentDocument;
+        const documentId = this.currentDocument;
+
+        // Show confirmation dialog
+        const confirmed = confirm(
+            `Are you sure you want to delete "${documentTitle}"?\n\n` +
+            `This action cannot be undone and will permanently remove the document ` +
+            `and all its history.`
+        );
+
+        if (!confirmed) {
+            EditorCore.log('Document deletion cancelled', 'shareable');
+            return;
+        }
+
+        const docKey = `am:document:${documentId}`;
+
+        EditorCore.log(`Deleting document: ${documentTitle} (${documentId})`, 'shareable');
+
+        try {
+            // Delete the document from Redis
+            const response = await fetch(`${EditorCore.WEBDIS_URL}/DEL/${docKey}`);
+            const data = await response.json();
+
+            if (data.DEL === 1 || data.DEL === true) {
+                EditorCore.log(`Document deleted successfully: ${documentTitle}`, 'shareable');
+
+                // Disconnect from the document
+                await this.disconnect();
+
+                // Refresh document list
+                await this.refreshDocumentList();
+
+                alert(`Document "${documentTitle}" has been deleted.`);
+            } else {
+                EditorCore.log(`Failed to delete document: ${JSON.stringify(data)}`, 'error');
+                alert('Failed to delete document. It may not exist or may have already been deleted.');
+            }
+        } catch (error) {
+            EditorCore.log(`Error deleting document: ${error.message}`, 'error');
+            console.error('Delete error:', error);
+            alert('An error occurred while deleting the document. Please try again.');
+        }
+    },
+
+    /**
      * Refresh the document list
      */
     async refreshDocumentList() {
@@ -1344,16 +1547,16 @@ const ShareableMode = {
             const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/am:document:*`);
             const data = await response.json();
 
-            const documents = (data.KEYS || []).map(key => {
-                // Extract document name from key
+            const documentIds = (data.KEYS || []).map(key => {
+                // Extract document ID (UUID) from key
                 return key.replace('am:document:', '');
             });
 
-            // Get active user counts and peer lists
+            // Get active user counts, peer lists, and titles
             const documentsWithUsers = await Promise.all(
-                documents.map(async (documentName) => {
-                    // Channel format: changes:am:document:{documentName}
-                    const docKey = `am:document:${documentName}`;
+                documentIds.map(async (documentId) => {
+                    // Channel format: changes:am:document:{documentId}
+                    const docKey = `am:document:${documentId}`;
                     const channel = `changes:${docKey}`;
                     const numsubResponse = await fetch(`${EditorCore.WEBDIS_URL}/PUBSUB/NUMSUB/${channel}`);
                     const numsubData = await numsubResponse.json();
@@ -1367,10 +1570,10 @@ const ShareableMode = {
                     }
 
                     // Get peer list for this document
-                    const peers = await this.getPeersInDocument(documentName);
+                    const peers = await this.getPeersInDocument(documentId);
 
                     // Track peer changes to update activity timestamp
-                    const previousPeers = this.documentPeers[documentName] || new Set();
+                    const previousPeers = this.documentPeers[documentId] || new Set();
                     const currentPeersSet = new Set(peers);
 
                     // Check if peers changed (joined or left)
@@ -1379,20 +1582,33 @@ const ShareableMode = {
                         [...previousPeers].some(p => !currentPeersSet.has(p));
 
                     if (peersChanged) {
-                        this.documentActivity[documentName] = Date.now();
-                        this.documentPeers[documentName] = currentPeersSet;
+                        this.documentActivity[documentId] = Date.now();
+                        this.documentPeers[documentId] = currentPeersSet;
                     }
 
                     // Ensure document has an activity timestamp (default to 0 for new documents)
-                    if (!this.documentActivity[documentName]) {
-                        this.documentActivity[documentName] = 0;
+                    if (!this.documentActivity[documentId]) {
+                        this.documentActivity[documentId] = 0;
+                    }
+
+                    // Load document title (use AM.GETTEXT to fetch just the title field)
+                    let title = 'Untitled Document';
+                    try {
+                        const titleResponse = await fetch(`${EditorCore.WEBDIS_URL}/AM.GETTEXT/${docKey}/title`);
+                        const titleData = await titleResponse.json();
+                        if (titleData['AM.GETTEXT']) {
+                            title = titleData['AM.GETTEXT'];
+                        }
+                    } catch (error) {
+                        EditorCore.log(`Error loading title for ${documentId}: ${error.message}`, 'error');
                     }
 
                     return {
-                        documentName,
+                        documentId,
+                        title,
                         activeUsers,
                         peers,
-                        lastActivity: this.documentActivity[documentName]
+                        lastActivity: this.documentActivity[documentId]
                     };
                 })
             );
@@ -1419,25 +1635,37 @@ const ShareableMode = {
 
         const currentActorId = this.getActorId();
 
-        listDiv.innerHTML = this.documentList.map(({ documentName, activeUsers, peers }) => {
+        listDiv.innerHTML = this.documentList.map(({ documentId, title, activeUsers, peers }) => {
             const userClass = activeUsers > 0 ? 'active' : '';
             const userText = activeUsers === 1 ? '1 user' : `${activeUsers} users`;
 
             // Show peers if this is the current document
-            const isCurrentDocument = this.currentDocument === documentName;
+            const isCurrentDocument = this.currentDocument === documentId;
             const peerListHtml = isCurrentDocument && peers && peers.length > 0
-                ? `<div class="peer-list">${peers.map(peerId => {
-                    const isCurrentUser = peerId === currentActorId;
+                ? `<div class="peer-list">${peers.map(peer => {
+                    // Check if current user by comparing screenName
+                    const isCurrentUser = peer.screenName === this.screenName;
                     const peerClass = isCurrentUser ? 'peer-item peer-item-current' : 'peer-item';
-                    const peerName = this.getScreenName(peerId);
-                    return `<div class="${peerClass}">${peerName}</div>`;
+
+                    // Display name with replica count if multiple
+                    const displayName = peer.actorIds.length > 1
+                        ? `${peer.screenName} (${peer.actorIds.length})`
+                        : peer.screenName;
+
+                    // Tooltip shows all actorIds for this user
+                    const actorIdList = peer.actorIds.map(id => id.slice(0, 8) + '...').join(', ');
+                    const tooltip = peer.actorIds.length > 1
+                        ? `${peer.actorIds.length} replicas: ${actorIdList}`
+                        : `Actor ID: ${peer.actorIds[0]}`;
+
+                    return `<div class="${peerClass}" title="${tooltip}">${displayName}</div>`;
                   }).join('')}</div>`
                 : '';
 
             return `
                 <div class="document-item-container ${isCurrentDocument ? 'current-document' : ''}">
-                    <div class="document-item" onclick="ShareableMode.joinDocument('${documentName}')">
-                        <span class="document-name">${documentName}</span>
+                    <div class="document-item" onclick="ShareableMode.joinDocument('${documentId}')">
+                        <span class="document-name">${this.escapeHtml(title)}</span>
                         <span class="document-users ${userClass}">${userText}</span>
                     </div>
                     ${peerListHtml}
@@ -1522,13 +1750,15 @@ const ShareableMode = {
     /**
      * Announce presence in a document
      */
-    async announcePresence(documentName) {
+    async announcePresence(documentId) {
         try {
             const actorId = this.getActorId();
-            const presenceKey = `presence:${documentName}`;
-            // Use Redis SET with expiration to track presence
-            await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${actorId}/10/${actorId}`);
-            EditorCore.log(`Announced presence in ${documentName}`, 'shareable');
+            const presenceKey = `presence:${documentId}`;
+            // Store screenName:actorId to enable user-level deduplication
+            // (ActorIds represent CRDT replicas, not users - same user can have multiple replicas)
+            const presenceValue = `${this.screenName}:${actorId}`;
+            await fetch(`${EditorCore.WEBDIS_URL}/SETEX/${presenceKey}:${actorId}/10/${presenceValue}`);
+            EditorCore.log(`Announced presence in document ${documentId}`, 'shareable');
         } catch (error) {
             EditorCore.log(`Error announcing presence: ${error.message}`, 'error');
         }
@@ -1537,27 +1767,60 @@ const ShareableMode = {
     /**
      * Start heartbeat to maintain presence
      */
-    startHeartbeat(documentName) {
+    startHeartbeat(documentId) {
         // Announce presence every 5 seconds
         this.heartbeatInterval = setInterval(async () => {
-            if (this.currentDocument === documentName) {
-                await this.announcePresence(documentName);
+            if (this.currentDocument === documentId) {
+                await this.announcePresence(documentId);
             }
         }, 5000);
     },
 
     /**
-     * Get peers in a document
+     * Get peers in a document, grouped by user (screenName)
+     * @returns {Promise<Array<{screenName: string, actorIds: string[]}>>}
      */
-    async getPeersInDocument(documentName) {
+    async getPeersInDocument(documentId) {
         try {
-            const pattern = `presence:${documentName}:*`;
+            const pattern = `presence:${documentId}:*`;
             const response = await fetch(`${EditorCore.WEBDIS_URL}/KEYS/${pattern}`);
             const data = await response.json();
 
             const keys = data.KEYS || [];
-            const peerIds = keys.map(key => key.split(':').pop());
-            return peerIds;
+
+            // Fetch values for all presence keys (values are "screenName:actorId")
+            const presenceData = await Promise.all(
+                keys.map(async (key) => {
+                    const getResponse = await fetch(`${EditorCore.WEBDIS_URL}/GET/${key}`);
+                    const getData = await getResponse.json();
+                    return getData.GET;
+                })
+            );
+
+            // Parse and group by screenName
+            const userMap = {}; // { screenName: [actorId1, actorId2, ...] }
+
+            for (const value of presenceData) {
+                if (!value) continue;
+
+                // Parse "screenName:actorId" format
+                const parts = value.split(':');
+                if (parts.length >= 2) {
+                    const screenName = parts[0];
+                    const actorId = parts.slice(1).join(':'); // Handle actorIds with colons
+
+                    if (!userMap[screenName]) {
+                        userMap[screenName] = [];
+                    }
+                    userMap[screenName].push(actorId);
+                }
+            }
+
+            // Convert to array of {screenName, actorIds[]}
+            return Object.entries(userMap).map(([screenName, actorIds]) => ({
+                screenName,
+                actorIds: [...new Set(actorIds)] // Deduplicate actorIds
+            }));
         } catch (error) {
             EditorCore.log(`Error getting peers: ${error.message}`, 'error');
             return [];
@@ -1625,7 +1888,6 @@ const ShareableMode = {
         }
 
         const currentChatLength = this.doc.chat_history.length;
-        const currentActorId = this.getActorId();
 
         // Check if we need to do a full refresh or just append new messages
         if (this._displayedChatCount === 0 || this._displayedChatCount > currentChatLength) {
@@ -1633,7 +1895,8 @@ const ShareableMode = {
             chatListDiv.innerHTML = this.doc.chat_history.map((msg, index) => {
                 const time = new Date(msg.timestamp).toLocaleTimeString();
                 const actorName = msg.actor ? this.getScreenName(msg.actor.toString()) : 'unknown';
-                const isCurrentUser = msg.actor === currentActorId;
+                // Compare by screenName, not actorId (same user can have multiple replicas)
+                const isCurrentUser = actorName === this.screenName;
                 const messageClass = isCurrentUser ? 'chat-message chat-message-current' : 'chat-message';
                 const actorClass = isCurrentUser ? 'chat-message-actor chat-message-actor-current' : 'chat-message-actor';
 
@@ -1669,7 +1932,8 @@ const ShareableMode = {
             const newMessagesHtml = newMessages.map((msg, index) => {
                 const time = new Date(msg.timestamp).toLocaleTimeString();
                 const actorName = msg.actor ? this.getScreenName(msg.actor.toString()) : 'unknown';
-                const isCurrentUser = msg.actor === currentActorId;
+                // Compare by screenName, not actorId (same user can have multiple replicas)
+                const isCurrentUser = actorName === this.screenName;
                 const messageClass = isCurrentUser ? 'chat-message chat-message-current' : 'chat-message';
                 const actorClass = isCurrentUser ? 'chat-message-actor chat-message-actor-current' : 'chat-message-actor';
 

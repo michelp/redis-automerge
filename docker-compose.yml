@@ -34,6 +34,41 @@ services:
       NODE_ENV: ${NODE_ENV:-development}
     restart: unless-stopped
 
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: automerge
+      POSTGRES_USER: automerge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-automerge_dev_password}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U automerge"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build: ./worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: automerge
+      POSTGRES_USER: automerge
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-automerge_dev_password}
+    restart: unless-stopped
+
   demo:
     image: nginx:alpine
     depends_on:
@@ -60,3 +95,6 @@ services:
       REDIS_HOST: redis
       WEBDIS_HOST: webdis
       WEBDIS_PORT: 7379
+
+volumes:
+  postgres_data:

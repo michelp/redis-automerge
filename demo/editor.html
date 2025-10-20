@@ -40,11 +40,20 @@
                     <button onclick="ShareableMode.copyShareableLink()" class="action-button">
                         📋 Share Link
                     </button>
+                    <button onclick="ShareableMode.deleteDocument()" class="action-button delete-button">
+                        🗑️ Delete
+                    </button>
                 </div>
             </div>
 
             <div class="editor-content">
-                <textarea id="editor-shareable" placeholder="Select a document or create a new one to start editing..."></textarea>
+                <div class="title-edit-container">
+                    <input id="document-title-input" type="text" placeholder="Document title" class="document-title-input" disabled />
+                </div>
+                <div class="editor-with-line-numbers">
+                    <div id="line-numbers" class="line-numbers"></div>
+                    <textarea id="editor-shareable" placeholder="Select a document or create a new one to start editing..."></textarea>
+                </div>
                 <div class="editor-status-footer">
                     <span id="connection-status-shareable-editor" class="status-disconnected">Disconnected</span>
                     <span id="sync-status-shareable-editor">Not syncing</span>

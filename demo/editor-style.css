@@ -564,6 +564,34 @@ textarea:focus {
     overflow: hidden;
 }
 
+.title-edit-container {
+    margin-bottom: 15px;
+}
+
+.document-title-input {
+    width: 100%;
+    padding: 12px 15px;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    font-size: 18px;
+    font-weight: 600;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    transition: border-color 0.2s, background-color 0.2s;
+    background: white;
+}
+
+.document-title-input:focus {
+    outline: none;
+    border-color: #667eea;
+    background: #fefefe;
+}
+
+.document-title-input:disabled {
+    background: #f3f4f6;
+    color: #9ca3af;
+    cursor: not-allowed;
+}
+
 .editor-content textarea {
     flex: 1;
     min-height: 0;
@@ -637,6 +665,14 @@ textarea:focus {
 .action-button.copy-success {
     background: #10b981 !important;
     transition: background 0.3s ease;
+}
+
+.action-button.delete-button {
+    background: #ef4444;
+}
+
+.action-button.delete-button:hover {
+    background: #dc2626;
 }
 
 #connection-status-shareable {
@@ -874,4 +910,54 @@ textarea:focus {
     font-size: 11px;
     line-height: 1.4;
     word-break: break-word;
+}
+
+/* Line numbers for editor */
+.editor-with-line-numbers {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    position: relative;
+    border: 2px solid #e5e7eb;
+    border-radius: 6px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+
+.editor-with-line-numbers:focus-within {
+    border-color: #667eea;
+}
+
+.line-numbers {
+    background: #f9fafb;
+    border-right: 1px solid #e5e7eb;
+    color: #9ca3af;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 15px 10px 15px 15px;
+    text-align: right;
+    user-select: none;
+    overflow: hidden;
+    white-space: pre;
+    min-width: 45px;
+}
+
+.editor-with-line-numbers textarea {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    border: none;
+    border-radius: 0;
+    padding: 15px;
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    line-height: 1.6;
+    resize: none;
+    margin: 0;
+}
+
+.editor-with-line-numbers textarea:focus {
+    outline: none;
+    border: none;
 }

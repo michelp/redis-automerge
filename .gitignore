@@ -26,5 +26,10 @@ aws-deploy/instance-info.txt.bak
 *.pem
 *.key
 
+# Environment files with secrets
+.env
+.env.production
+.env.local
+
 # Git worktrees
 .worktrees/

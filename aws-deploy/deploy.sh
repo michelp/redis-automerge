@@ -93,14 +93,32 @@ if [ -z "${SECURITY_GROUP_ID}" ] || [ "${SECURITY_GROUP_ID}" == "None" ]; then
         --region "${AWS_REGION}"
     echo "  - Opened port 22 (SSH)"
 
-    # Add HTTP rule
+    # Add HTTP rule (port 80 for Let's Encrypt validation and redirect to HTTPS)
+    aws ec2 authorize-security-group-ingress \
+        --group-id "${SECURITY_GROUP_ID}" \
+        --protocol tcp \
+        --port 80 \
+        --cidr 0.0.0.0/0 \
+        --region "${AWS_REGION}"
+    echo "  - Opened port 80 (HTTP)"
+
+    # Add HTTPS rule (port 443 for production)
+    aws ec2 authorize-security-group-ingress \
+        --group-id "${SECURITY_GROUP_ID}" \
+        --protocol tcp \
+        --port 443 \
+        --cidr 0.0.0.0/0 \
+        --region "${AWS_REGION}"
+    echo "  - Opened port 443 (HTTPS)"
+
+    # Add HTTP rule for local dev (port 8080)
     aws ec2 authorize-security-group-ingress \
         --group-id "${SECURITY_GROUP_ID}" \
         --protocol tcp \
         --port "${HTTP_PORT}" \
         --cidr 0.0.0.0/0 \
         --region "${AWS_REGION}"
-    echo "  - Opened port ${HTTP_PORT} (HTTP)"
+    echo "  - Opened port ${HTTP_PORT} (HTTP - dev only)"
 
     # Add Redis rule (optional - for external access)
     # Uncomment if you need external Redis access
@@ -169,12 +187,36 @@ aws ec2 wait instance-running \
 echo "✓ Instance is running"
 echo ""
 
-# Get instance public IP
-PUBLIC_IP=$(aws ec2 describe-instances \
-    --instance-ids "${INSTANCE_ID}" \
+# Allocate Elastic IP
+echo "Allocating Elastic IP..."
+ALLOCATION_ID=$(aws ec2 allocate-address \
+    --domain vpc \
     --region "${AWS_REGION}" \
-    --query 'Reservations[0].Instances[0].PublicIpAddress' \
+    --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=${ELASTIC_IP_NAME}},{Key=Project,Value=redis-automerge}]" \
+    --query 'AllocationId' \
     --output text)
+
+ELASTIC_IP=$(aws ec2 describe-addresses \
+    --allocation-ids "${ALLOCATION_ID}" \
+    --region "${AWS_REGION}" \
+    --query 'Addresses[0].PublicIp' \
+    --output text)
+
+echo "✓ Elastic IP allocated: ${ELASTIC_IP} (${ALLOCATION_ID})"
+
+# Associate Elastic IP with instance
+echo "Associating Elastic IP with instance..."
+ASSOCIATION_ID=$(aws ec2 associate-address \
+    --instance-id "${INSTANCE_ID}" \
+    --allocation-id "${ALLOCATION_ID}" \
+    --region "${AWS_REGION}" \
+    --query 'AssociationId' \
+    --output text)
+
+echo "✓ Elastic IP associated (${ASSOCIATION_ID})"
+
+# Use Elastic IP for all connections
+PUBLIC_IP="${ELASTIC_IP}"
 
 echo "✓ Public IP: ${PUBLIC_IP}"
 echo ""
@@ -238,36 +280,62 @@ else
     # Deploy via SCP
     echo "Deploying via file copy..."
 
-    # Copy project files (excluding unnecessary files)
+    # Check for production environment file
     cd "${SCRIPT_DIR}/.."
+    if [ ! -f ".env.production" ]; then
+        echo ""
+        echo "⚠️  WARNING: .env.production not found!"
+        echo "Create .env.production with your production OAuth credentials"
+        echo "See .env.production template for details"
+        echo ""
+        exit 1
+    fi
+
+    # Copy production .env to temporary location
+    cp .env.production /tmp/.env.production.tmp
+
+    # Copy project files (excluding unnecessary files)
     tar czf /tmp/redis-automerge.tar.gz \
         --exclude='target' \
         --exclude='.git' \
         --exclude='aws-deploy' \
         --exclude='node_modules' \
+        --exclude='.env' \
+        --exclude='.env.production' \
         .
 
     scp -o StrictHostKeyChecking=no -i "${KEY_FILE}" \
         /tmp/redis-automerge.tar.gz \
         "ec2-user@${PUBLIC_IP}:/tmp/"
 
+    # Copy production .env
+    scp -o StrictHostKeyChecking=no -i "${KEY_FILE}" \
+        /tmp/.env.production.tmp \
+        "ec2-user@${PUBLIC_IP}:/tmp/.env.production"
+
     ssh -o StrictHostKeyChecking=no -i "${KEY_FILE}" "ec2-user@${PUBLIC_IP}" << 'EOF'
         cd /opt/redis-automerge
         sudo tar xzf /tmp/redis-automerge.tar.gz
         rm /tmp/redis-automerge.tar.gz
 
-        # Build and start containers
-        sudo docker-compose build
-        sudo docker-compose up -d
+        # Copy production .env as .env
+        sudo cp /tmp/.env.production .env
+        sudo chown ec2-user:ec2-user .env
+        rm /tmp/.env.production
+
+        # Build and start containers with production config
+        sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml build
+        sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
         echo "Waiting for services to start..."
         sleep 10
 
         # Check if containers are running
-        sudo docker-compose ps
+        sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps
 EOF
 
     rm /tmp/redis-automerge.tar.gz
+    rm /tmp/.env.production.tmp
 fi
 
 echo "✓ Application deployed"
@@ -283,8 +351,13 @@ echo "Public IP: ${PUBLIC_IP}"
 echo "SSH Key: ${KEY_FILE}"
 echo ""
 echo "Access your application:"
-echo "  Demo Editor: http://${PUBLIC_IP}:${HTTP_PORT}/editor.html"
-echo "  Main Demo:   http://${PUBLIC_IP}:${HTTP_PORT}/index.html"
+if [ -n "${DOMAIN}" ]; then
+    echo "  HTTPS (after SSL setup): https://${DOMAIN}"
+    echo "  HTTP (temporary):        http://${PUBLIC_IP}:${HTTP_PORT}/editor.html"
+else
+    echo "  Demo Editor: http://${PUBLIC_IP}:${HTTP_PORT}/editor.html"
+    echo "  Main Demo:   http://${PUBLIC_IP}:${HTTP_PORT}/index.html"
+fi
 echo ""
 echo "SSH into instance:"
 echo "  ssh -i ${KEY_FILE} ec2-user@${PUBLIC_IP}"
@@ -297,6 +370,11 @@ echo ""
 echo "Manage instance:"
 echo "  ./aws-deploy/manage.sh [start|stop|restart|status|ssh|logs]"
 echo ""
+if [ -n "${DOMAIN}" ]; then
+    echo "Configure HTTPS/SSL (recommended):"
+    echo "  ./aws-deploy/configure-ssl.sh"
+    echo ""
+fi
 echo "Teardown:"
 echo "  ./aws-deploy/teardown.sh"
 echo ""
@@ -306,6 +384,9 @@ echo "=========================================="
 cat > "${SCRIPT_DIR}/instance-info.txt" << EOF
 INSTANCE_ID=${INSTANCE_ID}
 PUBLIC_IP=${PUBLIC_IP}
+ELASTIC_IP=${ELASTIC_IP}
+ALLOCATION_ID=${ALLOCATION_ID}
+ASSOCIATION_ID=${ASSOCIATION_ID}
 REGION=${AWS_REGION}
 KEY_FILE=${KEY_FILE}
 DEPLOYED_AT="$(date)"

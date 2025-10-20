@@ -30,8 +30,13 @@ export WEBDIS_PORT=7379
 export GIT_REPO=""
 # export GIT_REPO="https://github.com/yourusername/redis-automerge.git"
 
-# Domain/DNS (optional)
-export DOMAIN=""  # e.g., "demo.example.com"
+# Domain/DNS Configuration
+# REQUIRED for static IP and Route53 setup
+# Set this to your domain name (e.g., "palimset.example.com")
+export DOMAIN="palimset.com"
+
+# Elastic IP Configuration
+export ELASTIC_IP_NAME="${INSTANCE_NAME}-eip"
 
 # Tags
 export TAGS="ResourceType=instance,Tags=[{Key=Name,Value=${INSTANCE_NAME}},{Key=Project,Value=redis-automerge}]"

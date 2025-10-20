@@ -6,6 +6,9 @@ const Auth = {
     WEBDIS_URL: `${window.location.protocol}//${window.location.host}/api`,
     AUTH_URL: `${window.location.protocol}//${window.location.host}/auth`,
 
+    // In-memory cache (cleared on page refresh/close)
+    _cache: null,
+
     /**
      * Check current OAuth session status
      * @returns {Promise<{authenticated: boolean, user?: object}>}
@@ -98,7 +101,7 @@ const Auth = {
     },
 
     /**
-     * Logout - destroy OAuth session and clean up
+     * Logout - destroy OAuth session and clean up cache
      * @returns {Promise<boolean>} True if successful
      */
     async logout() {
@@ -112,12 +115,8 @@ const Auth = {
                 throw new Error('Logout request failed');
             }
 
-            // Clean up session storage
-            localStorage.removeItem('authToken');
-            localStorage.removeItem('screenName');
-            localStorage.removeItem('actorId');
-            localStorage.removeItem('provider');
-            localStorage.removeItem('avatarUrl');
+            // Clear in-memory cache
+            this._cache = null;
 
             return true;
         } catch (error) {
@@ -128,44 +127,48 @@ const Auth = {
 
     /**
      * Ensure user is authenticated, redirect to login if not
-     * @returns {Promise<{token: string, screenName: string, actorId: string} | null>}
+     * @returns {Promise<{token: string, screenName: string, actorId: string, provider: string, avatarUrl: string} | null>}
      */
     async requireAuth() {
-        // Check localStorage first
-        const token = localStorage.getItem('authToken');
-        const screenName = localStorage.getItem('screenName');
-        const actorId = localStorage.getItem('actorId');
-
-        if (token && screenName && actorId) {
-            // Verify token is still valid
-            const verification = await this.verify(token);
-            if (verification.valid) {
-                return { token, screenName, actorId };
-            }
+        // Check in-memory cache first (avoid redundant server fetches)
+        if (this._cache) {
+            return this._cache;
         }
 
-        // Check if we have a server session
+        // Fetch fresh from server (httpOnly cookie authenticates automatically)
         const session = await this.checkSession();
-        if (session.authenticated && session.user) {
-            // Store in localStorage
-            localStorage.setItem('authToken', session.user.token);
-            localStorage.setItem('screenName', session.user.screenName);
-            localStorage.setItem('actorId', session.user.actorId);
-            localStorage.setItem('provider', session.user.provider);
-            if (session.user.avatarUrl) {
-                localStorage.setItem('avatarUrl', session.user.avatarUrl);
-            }
 
-            return {
-                token: session.user.token,
-                screenName: session.user.screenName,
-                actorId: session.user.actorId
-            };
+        if (!session.authenticated || !session.user) {
+            // Not authenticated - redirect to login, preserving document parameter
+            const urlParams = new URLSearchParams(window.location.search);
+            const documentParam = urlParams.get('document');
+
+            if (documentParam) {
+                window.location.href = `/index.html?document=${encodeURIComponent(documentParam)}`;
+            } else {
+                window.location.href = '/index.html';
+            }
+            return null;
         }
 
-        // Not authenticated - redirect to login
-        window.location.href = '/index.html';
-        return null;
+        // Cache in memory only (no persistent storage)
+        this._cache = {
+            token: session.user.token,
+            screenName: session.user.screenName,
+            actorId: session.user.actorId,
+            provider: session.user.provider,
+            avatarUrl: session.user.avatarUrl || ''
+        };
+
+        return this._cache;
+    },
+
+    /**
+     * Get cached user data without fetching from server
+     * @returns {object | null} Cached user data or null
+     */
+    getCached() {
+        return this._cache;
     }
 };
 

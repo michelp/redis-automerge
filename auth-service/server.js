@@ -10,6 +10,9 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Trust nginx proxy (required for secure cookies behind HTTPS proxy)
+app.set('trust proxy', 1);
+
 // Redis client for session storage and user data
 const redisClient = redis.createClient({
   url: process.env.REDIS_URL || 'redis://redis:6379'
@@ -26,7 +29,8 @@ app.use(session({
   cookie: {
     secure: process.env.NODE_ENV === 'production',
     httpOnly: true,
-    maxAge: 1000 * 60 * 60 * 24 * 7 // 7 days
+    maxAge: 1000 * 60 * 60 * 24 * 7, // 7 days
+    sameSite: 'lax' // Prevent CSRF while allowing OAuth redirects
   }
 }));
 
@@ -130,14 +134,39 @@ app.get('/auth/health', (req, res) => {
 });
 
 // Start GitHub OAuth flow
-app.get('/auth/github', passport.authenticate('github', { scope: ['user:email'] }));
+app.get('/auth/github', (req, res, next) => {
+  // Pass state through to OAuth flow to preserve redirect destination
+  const options = {
+    scope: ['user:email']
+  };
+
+  if (req.query.state) {
+    options.state = req.query.state;
+  }
+
+  passport.authenticate('github', options)(req, res, next);
+});
 
 // GitHub OAuth callback
 app.get('/auth/github/callback',
   passport.authenticate('github', { failureRedirect: '/' }),
   (req, res) => {
     // Successful authentication, redirect to editor
-    res.redirect('/editor.html');
+    let redirectUrl = '/editor.html';
+
+    // Check if state parameter contains redirect info (e.g., document parameter)
+    if (req.query.state) {
+      try {
+        const state = JSON.parse(req.query.state);
+        if (state.document) {
+          redirectUrl = `/editor.html?document=${encodeURIComponent(state.document)}`;
+        }
+      } catch (err) {
+        console.error('Failed to parse OAuth state:', err);
+      }
+    }
+
+    res.redirect(redirectUrl);
   }
 );
 

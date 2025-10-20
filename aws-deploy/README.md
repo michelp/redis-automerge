@@ -66,9 +66,10 @@ This will:
 1. ✓ Create SSH key pair
 2. ✓ Create security group with firewall rules
 3. ✓ Launch EC2 instance (t3.micro)
-4. ✓ Install Docker & Docker Compose
-5. ✓ Deploy your application
-6. ✓ Display connection info
+4. ✓ Allocate Elastic IP (static IP)
+5. ✓ Install Docker & Docker Compose
+6. ✓ Deploy your application
+7. ✓ Display connection info
 
 **Deployment takes ~3-5 minutes**
 
@@ -82,6 +83,76 @@ SSH Command: ssh -i ~/.ssh/redis-automerge-key.pem ec2-user@YOUR-IP
 ```
 
 Open the URL in your browser to access the collaborative editor!
+
+## Domain Setup with Route53 (Optional)
+
+By default, your instance gets a dynamic public IP that changes when you stop/start the instance. To use a custom domain with a static IP:
+
+### Prerequisites
+
+1. **Own a domain** (e.g., from Namecheap, GoDaddy, Google Domains)
+2. **Configure domain in aws-config.sh**:
+   ```bash
+   export DOMAIN="palimset.example.com"
+   ```
+
+### Steps
+
+1. **Deploy or update your instance:**
+   ```bash
+   ./aws-deploy/deploy.sh
+   ```
+   This automatically allocates an Elastic IP (static IP that persists across restarts).
+
+2. **Configure DNS with Route53:**
+   ```bash
+   ./aws-deploy/configure-dns.sh
+   ```
+
+   This will:
+   - Create or find Route53 hosted zone for your domain
+   - Create A record pointing domain to your Elastic IP
+   - Display nameserver configuration (if new hosted zone)
+
+3. **Update domain registrar nameservers** (if you created a new hosted zone):
+   - Go to your domain registrar (GoDaddy, Namecheap, etc.)
+   - Update nameservers to the ones displayed by configure-dns.sh
+   - Wait 24-48 hours for DNS propagation
+
+4. **Update GitHub OAuth callback URL:**
+   - Go to [GitHub Developer Settings](https://github.com/settings/developers)
+   - Find your OAuth App
+   - Update "Authorization callback URL" to: `http://YOUR_DOMAIN:8080/auth/github/callback`
+
+5. **Update .env file:**
+   ```bash
+   # Edit .env file
+   GITHUB_CALLBACK_URL=http://YOUR_DOMAIN:8080/auth/github/callback
+   ```
+
+6. **Redeploy application:**
+   ```bash
+   ./aws-deploy/manage.sh update
+   ```
+
+Your application is now accessible at: `http://YOUR_DOMAIN:8080/editor.html`
+
+### Benefits of Elastic IP + Domain
+
+- **Static IP**: IP address persists when you stop/start instance
+- **Professional URL**: Use your own domain instead of EC2 public IP
+- **Persistent OAuth**: GitHub callback URL stays the same
+
+### Cost
+
+- **Elastic IP**: FREE while attached to running instance
+- **Elastic IP**: $0.005/hour (~$3.60/month) if instance is stopped but IP is allocated
+- **Route53 Hosted Zone**: $0.50/month
+- **Route53 Queries**: $0.40/million queries (first million FREE)
+
+**Total additional cost: ~$0.50-4/month**
+
+To avoid Elastic IP charges when instance is stopped, you can release the IP (but you'll lose the static IP and need to reconfigure DNS).
 
 ## Configuration
 
@@ -123,7 +194,8 @@ export WEBDIS_PORT=7379
 ./aws-deploy/manage.sh start
 ```
 - Restarts stopped instance
-- May get a new IP address
+- **Without Elastic IP**: May get a new IP address
+- **With Elastic IP**: IP address stays the same
 
 ### SSH Into Instance
 ```bash
@@ -178,9 +250,12 @@ Local SSH key file is preserved unless you choose to delete it.
 ### After Free Tier
 - **t3.micro**: ~$7.50/month ($0.0104/hour)
 - **EBS Storage**: ~$1/month (10 GB @ $0.10/GB)
+- **Elastic IP**: FREE (while instance running)
 - **Data Transfer**: First 100 GB FREE/month
 
 **Total: ~$8.50/month after free tier**
+
+**Note**: Elastic IP is FREE when attached to a running instance, but costs $0.005/hour (~$3.60/month) if the instance is stopped but the IP is still allocated.
 
 ### To Save Money
 ```bash
@@ -363,6 +438,7 @@ scp -i ~/.ssh/redis-automerge-key.pem ec2-user@YOUR-IP:/opt/redis-automerge/back
 
 - **aws-config.sh**: Configuration (edit this)
 - **deploy.sh**: Main deployment script
+- **configure-dns.sh**: Route53 DNS setup script
 - **manage.sh**: Management commands
 - **teardown.sh**: Cleanup script
 - **setup.sh**: User data (runs on instance boot)

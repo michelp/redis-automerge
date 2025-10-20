@@ -41,12 +41,18 @@ get_instance_state() {
 }
 
 # Function to get public IP
+# Prefers Elastic IP from instance-info.txt if available (static)
+# Falls back to querying EC2 for dynamic IP
 get_public_ip() {
-    aws ec2 describe-instances \
-        --instance-ids "${INSTANCE_ID}" \
-        --region "${REGION}" \
-        --query 'Reservations[0].Instances[0].PublicIpAddress' \
-        --output text 2>/dev/null || echo "none"
+    if [ -n "${ELASTIC_IP}" ]; then
+        echo "${ELASTIC_IP}"
+    else
+        aws ec2 describe-instances \
+            --instance-ids "${INSTANCE_ID}" \
+            --region "${REGION}" \
+            --query 'Reservations[0].Instances[0].PublicIpAddress' \
+            --output text 2>/dev/null || echo "none"
+    fi
 }
 
 # Main command handling
@@ -62,9 +68,18 @@ case "${COMMAND}" in
         echo "Instance ID: ${INSTANCE_ID}"
         echo "State: ${STATE}"
         echo "Public IP: ${IP}"
+
+        if [ -n "${DOMAIN}" ]; then
+            echo "Domain: ${DOMAIN}"
+        fi
+
         echo ""
         if [ "${STATE}" == "running" ]; then
-            echo "Application URL: http://${IP}:8080/editor.html"
+            if [ -n "${DOMAIN}" ]; then
+                echo "Application URL: https://${DOMAIN}"
+            else
+                echo "Application URL: http://${IP}:8080/editor.html"
+            fi
         fi
         ;;
 
@@ -82,10 +97,16 @@ case "${COMMAND}" in
         IP=$(get_public_ip)
         echo "✓ Instance started"
         echo "Public IP: ${IP}"
-        echo "Application URL: http://${IP}:8080/editor.html"
 
-        # Update instance info with new IP
-        sed -i.bak "s/PUBLIC_IP=.*/PUBLIC_IP=${IP}/" "${SCRIPT_DIR}/instance-info.txt"
+        if [ -n "${DOMAIN}" ]; then
+            echo "Application URL: https://${DOMAIN}"
+        else
+            echo "Application URL: http://${IP}:8080/editor.html"
+        fi
+
+        if [ -n "${ELASTIC_IP}" ]; then
+            echo "Note: Using Elastic IP - IP address persists across restarts"
+        fi
         ;;
 
     stop)
@@ -114,7 +135,11 @@ case "${COMMAND}" in
         sleep 30
 
         IP=$(get_public_ip)
-        echo "Application URL: http://${IP}:8080/editor.html"
+        if [ -n "${DOMAIN}" ]; then
+            echo "Application URL: https://${DOMAIN}"
+        else
+            echo "Application URL: http://${IP}:8080/editor.html"
+        fi
         ;;
 
     ssh)
@@ -152,19 +177,39 @@ case "${COMMAND}" in
         IP=$(get_public_ip)
         echo "Updating application on ${IP}..."
 
-        # Create tarball
+        # Check for production environment file
         cd "${SCRIPT_DIR}/.."
+        if [ ! -f ".env.production" ]; then
+            echo ""
+            echo "⚠️  WARNING: .env.production not found!"
+            echo "Create .env.production with your production OAuth credentials"
+            echo "See .env.production template for details"
+            echo ""
+            exit 1
+        fi
+
+        # Copy production .env to temporary location
+        cp .env.production /tmp/.env.production.tmp
+
+        # Create tarball
         tar czf /tmp/redis-automerge.tar.gz \
             --exclude='target' \
             --exclude='.git' \
             --exclude='aws-deploy' \
             --exclude='node_modules' \
+            --exclude='.env' \
+            --exclude='.env.production' \
             .
 
         # Upload and deploy
         scp -o StrictHostKeyChecking=no -i "${KEY_FILE}" \
             /tmp/redis-automerge.tar.gz \
             "ec2-user@${IP}:/tmp/"
+
+        # Copy production .env
+        scp -o StrictHostKeyChecking=no -i "${KEY_FILE}" \
+            /tmp/.env.production.tmp \
+            "ec2-user@${IP}:/tmp/.env.production"
 
         ssh -o StrictHostKeyChecking=no -i "${KEY_FILE}" "ec2-user@${IP}" << 'EOF'
             cd /opt/redis-automerge
@@ -179,19 +224,30 @@ case "${COMMAND}" in
             sudo tar xzf /tmp/redis-automerge.tar.gz
             rm /tmp/redis-automerge.tar.gz
 
-            # Rebuild and restart
-            sudo docker-compose build
-            sudo docker-compose up -d
+            # Copy production .env as .env
+            sudo cp /tmp/.env.production .env
+            sudo chown ec2-user:ec2-user .env
+            rm /tmp/.env.production
+
+            # Rebuild and restart with production config
+            sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml build
+            sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 
             echo "Waiting for services to start..."
             sleep 10
 
-            sudo docker-compose ps
+            sudo docker-compose -f docker-compose.yml -f docker-compose.prod.yml ps
 EOF
 
         rm /tmp/redis-automerge.tar.gz
+        rm /tmp/.env.production.tmp
         echo "✓ Application updated"
-        echo "Application URL: http://${IP}:8080/editor.html"
+
+        if [ -n "${DOMAIN}" ]; then
+            echo "Application URL: https://${DOMAIN}"
+        else
+            echo "Application URL: http://${IP}:8080/editor.html"
+        fi
         ;;
 
     info)
@@ -204,13 +260,32 @@ EOF
         echo "Region: ${REGION}"
         echo "State: ${STATE}"
         echo "Public IP: ${IP}"
+
+        if [ -n "${ELASTIC_IP}" ]; then
+            echo "Elastic IP: ${ELASTIC_IP}"
+            echo "  Allocation ID: ${ALLOCATION_ID}"
+        fi
+
+        if [ -n "${DOMAIN}" ]; then
+            echo "Domain: ${DOMAIN}"
+            if [ -n "${HOSTED_ZONE_ID}" ]; then
+                echo "  Hosted Zone: ${HOSTED_ZONE_ID}"
+            fi
+        fi
+
         echo "SSH Key: ${KEY_FILE}"
         echo "Deployed: ${DEPLOYED_AT}"
         echo ""
         echo "URLs:"
         if [ "${STATE}" == "running" ]; then
-            echo "  Demo Editor: http://${IP}:8080/editor.html"
-            echo "  Main Demo:   http://${IP}:8080/index.html"
+            if [ -n "${DOMAIN}" ]; then
+                echo "  Production (HTTPS):      https://${DOMAIN}"
+                echo "  Production (HTTP redirect): http://${DOMAIN}"
+                echo "  Dev (HTTP):              http://${DOMAIN}:8080/editor.html"
+            else
+                echo "  Demo Editor: http://${IP}:8080/editor.html"
+                echo "  Main Demo:   http://${IP}:8080/index.html"
+            fi
         else
             echo "  (Instance not running)"
         fi
@@ -221,6 +296,9 @@ EOF
         echo "Cost Estimate:"
         echo "  t3.micro: ~$0.01/hour (~$7.50/month)"
         echo "  EBS Storage: ~$0.10/GB/month"
+        if [ -n "${ELASTIC_IP}" ]; then
+            echo "  Elastic IP: Free while attached, $0.005/hour if unattached"
+        fi
         echo "  (Free tier: 750 hours/month for 12 months)"
         ;;
 

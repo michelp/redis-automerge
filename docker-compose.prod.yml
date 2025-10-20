@@ -1,0 +1,13 @@
+# Production overrides for docker-compose.yml
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.prod.yml up
+
+services:
+  demo:
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./demo:/usr/share/nginx/html:ro
+      - ./demo/nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
