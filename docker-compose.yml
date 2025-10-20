@@ -1,0 +1,35 @@
+services:
+  redis:
+    build: .
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+  webdis:
+    image: nicolas/webdis:latest
+    depends_on:
+      - redis
+    ports:
+      - "7379:7379"
+    environment:
+      REDIS_HOST: redis
+    restart: unless-stopped
+
+  test:
+    image: redis:7
+    depends_on:
+      - redis
+      - webdis
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    entrypoint: ["bash", "scripts/test-module.sh"]
+    environment:
+      REDIS_HOST: redis
+      WEBDIS_HOST: webdis
+      WEBDIS_PORT: 7379
+
+volumes:
+  redis-data:
