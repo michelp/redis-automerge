@@ -33,3 +33,6 @@ aws-deploy/instance-info.txt.bak
 
 # Git worktrees
 .worktrees/
+
+# Python virtual environment
+.venv/
