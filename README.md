@@ -50,36 +50,24 @@ redis-server --loadmodule /path/to/libredis_automerge.so
 ### Using Docker Compose
 
 ```bash
-# Start Redis only
+# Start Redis with module loaded
 docker compose up redis
 
-# Start all services (Redis + Webdis + Demo frontend)
-docker compose up
-
-# Access demo frontend at http://localhost:8080
-# Access Webdis API at http://localhost:7379
+# Run integration tests
+docker compose run --build --rm test
 ```
 
-## Live Demo
+## Demo Application
 
-A collaborative text editor is available at `http://localhost:8080` when running `docker compose up`.
+For a complete collaborative text editor application built with this module, see:
+- **[Palimset](https://github.com/michelp/palimset)** - Real-time collaborative editor with OAuth, PostgreSQL archiving, and production deployment
 
-### Palimset - Collaborative Editor
-- **Real-time collaboration** - Multiple users can edit documents simultaneously
-- **Screen name authentication** - Simple username-based access with server-side validation
-- **Document management** - Create and switch between multiple documents
-- **Live chat** - Built-in chat for each document
-- **Change history** - View all document changes with details
-- **Automatic conflict resolution** - Powered by Automerge CRDTs
-- **Persistent storage** - All documents stored in Redis
-
-The demo showcases:
+Palimset demonstrates:
 - Real-time synchronization using `AM.APPLY` and `AM.CHANGES`
 - WebSocket pub/sub for instant updates
 - Text editing with `AM.SPLICETEXT`
 - Local-first architecture with automatic merging
-
-Try it: Open `http://localhost:8080` in multiple browser tabs with different screen names and watch edits sync in real-time!
+- OAuth authentication and document management
 
 ## Redis Commands
 
