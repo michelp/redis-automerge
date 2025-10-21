@@ -8,6 +8,7 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 ## Features
 
 - **JSON-like document storage** with RedisJSON-compatible path syntax
+- **JSON import/export** - seamlessly convert between Automerge and JSON formats
 - **Automatic conflict resolution** using Automerge CRDTs
 - **Nested data structures** - maps and arrays with dot notation and array indices
 - **Type-safe operations** - text, integers, doubles, and booleans
@@ -115,6 +116,107 @@ AM.CHANGES mydoc <hash1> <hash2>
 ```
 
 This command is essential for synchronizing document state between clients. A client can request only the changes it doesn't have by providing the hashes of changes it already knows about.
+
+#### `AM.TOJSON <key> [pretty]`
+Export an Automerge document to JSON format. Converts all maps, lists, and scalar values to their JSON equivalents.
+
+```redis
+# Export as compact JSON (default)
+AM.TOJSON mydoc
+# Returns: {"name":"Alice","age":30,"tags":["rust","redis"]}
+
+# Export with pretty formatting (indented, multi-line)
+AM.TOJSON mydoc true
+# Returns:
+# {
+#   "name": "Alice",
+#   "age": 30,
+#   "tags": [
+#     "rust",
+#     "redis"
+#   ]
+# }
+```
+
+Parameters:
+- `pretty` (optional) - Set to `true`, `1`, or `yes` for pretty-printed JSON. Defaults to compact format.
+
+Type conversions:
+- Automerge **Maps** → JSON objects `{}`
+- Automerge **Lists** → JSON arrays `[]`
+- Automerge **text** → JSON strings
+- Automerge **integers** → JSON numbers
+- Automerge **doubles** → JSON numbers
+- Automerge **booleans** → JSON `true`/`false`
+- Automerge **null** → JSON `null`
+
+#### `AM.FROMJSON <key> <json>`
+Create or replace an Automerge document from JSON data. The inverse of `AM.TOJSON`.
+
+```redis
+# Create document from JSON
+AM.FROMJSON mydoc '{"name":"Alice","age":30,"active":true}'
+
+# Verify the data
+AM.GETTEXT mydoc name
+# Returns: "Alice"
+
+AM.GETINT mydoc age
+# Returns: 30
+```
+
+Type conversions:
+- JSON objects `{}` → Automerge **Maps**
+- JSON arrays `[]` → Automerge **Lists**
+- JSON strings → Automerge **text** values
+- JSON numbers (integer) → Automerge **integers**
+- JSON numbers (float) → Automerge **doubles**
+- JSON `true`/`false` → Automerge **booleans**
+- JSON `null` → Automerge **null**
+
+Requirements:
+- The root JSON value **must be an object** `{}`
+- Nested objects and arrays are fully supported
+- All standard JSON data types are supported
+
+**Example with nested data:**
+
+```redis
+# Import complex JSON structure
+AM.FROMJSON config '{"database":{"host":"localhost","port":5432},"features":["api","auth","cache"]}'
+
+# Access nested values
+AM.GETTEXT config database.host
+# Returns: "localhost"
+
+AM.GETINT config database.port
+# Returns: 5432
+
+AM.GETTEXT config features[0]
+# Returns: "api"
+```
+
+**Roundtrip example:**
+
+```redis
+# Create document traditionally
+AM.NEW original
+AM.PUTTEXT original title "My Document"
+AM.CREATELIST original tags
+AM.APPENDTEXT original tags "important"
+AM.APPENDTEXT original tags "draft"
+
+# Export to JSON
+AM.TOJSON original
+# Returns: {"title":"My Document","tags":["important","draft"]}
+
+# Import into new document
+AM.FROMJSON copy '{"title":"My Document","tags":["important","draft"]}'
+
+# Both documents now have identical content
+AM.TOJSON copy
+# Returns: {"title":"My Document","tags":["important","draft"]}
+```
 
 ### Value Operations
 
@@ -434,6 +536,42 @@ AM.GETBOOL config:main cache.enabled
 
 AM.LISTLEN config:main features
 # Returns: 3
+```
+
+### JSON Import/Export
+
+```redis
+# Import data from external JSON source
+AM.FROMJSON api:response '{"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}],"total":2,"page":1}'
+
+# Query the imported data
+AM.LISTLEN api:response users
+# Returns: 2
+
+AM.GETINT api:response total
+# Returns: 2
+
+# Export document to JSON for external use
+AM.TOJSON api:response
+# Returns: {"users":[{"id":1,"name":"Alice"},{"id":2,"name":"Bob"}],"total":2,"page":1}
+
+# Export with pretty formatting for debugging
+AM.TOJSON api:response true
+# Returns formatted JSON:
+# {
+#   "users": [
+#     {
+#       "id": 1,
+#       "name": "Alice"
+#     },
+#     {
+#       "id": 2,
+#       "name": "Bob"
+#     }
+#   ],
+#   "total": 2,
+#   "page": 1
+# }
 ```
 
 ## Testing
