@@ -11,6 +11,8 @@ apt-get update -qq > /dev/null 2>&1 && apt-get install -y -qq jq > /dev/null 2>&
 # Ensure server is up
 echo "1. Checking server connection..."
 redis-cli -h "$HOST" ping
+# Clear any persisted data from previous test runs
+redis-cli -h "$HOST" flushall > /dev/null
 redis-cli -h "$HOST" del doc
 
 # Create a new document and test text values
