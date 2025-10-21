@@ -857,7 +857,7 @@ impl RedisAutomergeClient {
             get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
         {
             if let ScalarValue::Counter(c) = s.as_ref() {
-                return Ok(Some(*c as i64));
+                return Ok(Some(i64::from(c)));
             }
         }
         Ok(None)
