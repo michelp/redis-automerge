@@ -1419,6 +1419,87 @@ json='{"test":"value"}'
 test_notification "notif_fromjson" "am.fromjson" "echo '$json' | redis-cli -h $HOST -x am.fromjson notif_fromjson"
 echo "   ✓ AM.FROMJSON emits keyspace notification"
 
+echo "83. Testing timestamp operations..."
+redis-cli -h "$HOST" del ts_test1
+redis-cli -h "$HOST" am.new ts_test1
+# Unix timestamp for 2024-01-01T00:00:00Z in milliseconds
+redis-cli -h "$HOST" am.puttimestamp ts_test1 created_at 1704067200000
+val=$(redis-cli -h "$HOST" am.gettimestamp ts_test1 created_at)
+test "$val" = "1704067200000"
+echo "   ✓ Timestamp get/set works"
+
+echo "84. Testing timestamp persistence..."
+redis-cli -h "$HOST" --raw am.save ts_test1 > /tmp/ts-saved.bin
+truncate -s -1 /tmp/ts-saved.bin
+redis-cli -h "$HOST" del ts_test1
+redis-cli -h "$HOST" --raw -x am.load ts_test1 < /tmp/ts-saved.bin
+val=$(redis-cli -h "$HOST" am.gettimestamp ts_test1 created_at)
+test "$val" = "1704067200000"
+echo "   ✓ Timestamp persistence works"
+
+echo "85. Testing timestamp in nested paths..."
+redis-cli -h "$HOST" del ts_test2
+redis-cli -h "$HOST" am.new ts_test2
+redis-cli -h "$HOST" am.puttimestamp ts_test2 event.created_at 1704067200000
+val=$(redis-cli -h "$HOST" am.gettimestamp ts_test2 event.created_at)
+test "$val" = "1704067200000"
+echo "   ✓ Nested timestamp paths work"
+
+echo "86. Testing timestamp JSON export..."
+redis-cli -h "$HOST" del ts_test3
+redis-cli -h "$HOST" am.new ts_test3
+redis-cli -h "$HOST" am.puttimestamp ts_test3 created_at 1704067200000
+redis-cli -h "$HOST" am.puttext ts_test3 name "Event"
+json=$(redis-cli -h "$HOST" --raw am.tojson ts_test3)
+# Timestamp should be exported as ISO 8601 datetime string
+if echo "$json" | grep -q "2024-01-01T00:00:00+00:00"; then
+    echo "   ✓ Timestamps export as ISO 8601 UTC strings in JSON"
+else
+    echo "   ✗ Timestamp JSON export failed: $json"
+fi
+
+echo "87. Testing timestamp notification..."
+redis-cli -h "$HOST" del notif_ts
+redis-cli -h "$HOST" am.new notif_ts
+test_notification "notif_ts" "am.puttimestamp" "redis-cli -h $HOST am.puttimestamp notif_ts event_time 1704067200000"
+echo "   ✓ AM.PUTTIMESTAMP emits keyspace notification"
+
+echo "88. Testing timestamp change publishing..."
+redis-cli -h "$HOST" del change_pub_ts > /dev/null
+redis-cli -h "$HOST" am.new change_pub_ts > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_ts" > /tmp/changes_test88.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.PUTTIMESTAMP operation
+redis-cli -h "$HOST" am.puttimestamp change_pub_ts created_at 1704067200000 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test88.txt ] && grep -q "changes:change_pub_ts" /tmp/changes_test88.txt; then
+    echo "   ✓ AM.PUTTIMESTAMP publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.PUTTIMESTAMP"
+    [ -f /tmp/changes_test88.txt ] && cat /tmp/changes_test88.txt
+fi
+rm -f /tmp/changes_test88.txt
+
+echo "89. Testing mixed types with timestamps..."
+redis-cli -h "$HOST" del ts_test4
+redis-cli -h "$HOST" am.new ts_test4
+redis-cli -h "$HOST" am.puttext ts_test4 name "Alice"
+redis-cli -h "$HOST" am.putint ts_test4 age 30
+redis-cli -h "$HOST" am.puttimestamp ts_test4 joined_at 1704067200000
+val=$(redis-cli -h "$HOST" am.gettimestamp ts_test4 joined_at)
+test "$val" = "1704067200000"
+echo "   ✓ Timestamps work alongside other types"
+
 # Helper function for assertions
 assert_equals() {
     local expected=$1

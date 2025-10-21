@@ -7,7 +7,7 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 
 ## Features
 
-- **JSON-like document storage** with RedisJSON-compatible path syntax
+- **JSON-like document storage** with RedisJSON-like path syntax
 - **JSON import/export** - seamlessly convert between Automerge and JSON formats
 - **Automatic conflict resolution** using Automerge CRDTs
 - **Nested data structures** - maps and arrays with dot notation and array indices

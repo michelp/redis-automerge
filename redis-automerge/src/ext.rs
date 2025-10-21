@@ -974,6 +974,124 @@ impl RedisAutomergeClient {
         Ok(None)
     }
 
+    /// Insert a timestamp value using a path (e.g., "event.created_at", "timestamps[0]", or "$.event.timestamp").
+    /// Creates intermediate maps as needed. Array indices must already exist.
+    ///
+    /// Timestamps are stored as i64 values representing milliseconds since Unix epoch (UTC).
+    /// They will be rendered as ISO 8601 UTC datetime strings when exported to JSON.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the field
+    /// * `value` - Unix timestamp in milliseconds
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// // Set timestamp to 2024-01-01 00:00:00 UTC (1704067200000 milliseconds)
+    /// client.put_timestamp("created_at", 1704067200000).unwrap();
+    /// ```
+    pub fn put_timestamp(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+        let mut tx = self.doc.transaction();
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
+
+        // Put timestamp value
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.put(&parent_obj, key.as_str(), ScalarValue::Timestamp(value))?;
+            }
+            PathSegment::Index(idx) => {
+                tx.put(&parent_obj, *idx, ScalarValue::Timestamp(value))?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert a timestamp value and return the raw change bytes.
+    pub fn put_timestamp_with_change(
+        &mut self,
+        path: &str,
+        value: i64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+        let mut tx = self.doc.transaction();
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
+
+        // Put timestamp value
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.put(&parent_obj, key.as_str(), ScalarValue::Timestamp(value))?;
+            }
+            PathSegment::Index(idx) => {
+                tx.put(&parent_obj, *idx, ScalarValue::Timestamp(value))?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Retrieve a timestamp value using a path (e.g., "event.created_at", "timestamps[0]", or "$.event.timestamp").
+    /// Returns the timestamp as an i64 (milliseconds since Unix epoch).
+    pub fn get_timestamp(&self, path: &str) -> Result<Option<i64>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Ok(None);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
+            if let ScalarValue::Timestamp(ts) = s.as_ref() {
+                return Ok(Some(*ts));
+            }
+        }
+        Ok(None)
+    }
+
     /// Apply a unified diff to update text value at the specified path.
     ///
     /// This is more efficient than replacing entire text values when only small
@@ -1855,6 +1973,18 @@ impl RedisAutomergeClient {
                             }
                         }
                         ScalarValue::Counter(c) => Ok(JsonValue::Number(i64::from(c).into())),
+                        ScalarValue::Timestamp(ts) => {
+                            // Convert Unix timestamp (milliseconds) to ISO 8601 UTC datetime string
+                            use chrono::{TimeZone, Utc};
+                            let seconds = ts / 1000;
+                            let nanos = ((ts % 1000) * 1_000_000) as u32;
+                            if let Some(dt) = Utc.timestamp_opt(seconds, nanos).single() {
+                                Ok(JsonValue::String(dt.to_rfc3339()))
+                            } else {
+                                // If timestamp is invalid, return null
+                                Ok(JsonValue::Null)
+                            }
+                        }
                         ScalarValue::Boolean(b) => Ok(JsonValue::Bool(*b)),
                         ScalarValue::Null => Ok(JsonValue::Null),
                         _ => Ok(JsonValue::Null),

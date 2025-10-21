@@ -542,6 +542,55 @@ fn am_inccounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
+fn am_puttimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value: i64 = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("value must be an integer (Unix timestamp in milliseconds)"))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_timestamp_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.puttimestamp", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttimestamp", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_gettimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .get_timestamp(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(value) => Ok(RedisValue::Integer(value)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
 fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() != 3 {
         return Err(RedisError::WrongArity);
@@ -919,6 +968,8 @@ redis_module! {
         ["am.putcounter", am_putcounter, "write deny-oom", 1, 1, 1],
         ["am.getcounter", am_getcounter, "readonly", 1, 1, 1],
         ["am.inccounter", am_inccounter, "write deny-oom", 1, 1, 1],
+        ["am.puttimestamp", am_puttimestamp, "write deny-oom", 1, 1, 1],
+        ["am.gettimestamp", am_gettimestamp, "readonly", 1, 1, 1],
         ["am.createlist", am_createlist, "write deny-oom", 1, 1, 1],
         ["am.appendtext", am_appendtext, "write deny-oom", 1, 1, 1],
         ["am.appendint", am_appendint, "write deny-oom", 1, 1, 1],
@@ -1964,5 +2015,135 @@ mod tests {
         // Converting empty document to JSON should give back empty object
         let exported = client.to_json(false).unwrap();
         assert_eq!(exported, "{}");
+    }
+
+    #[test]
+    fn put_and_get_timestamp_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Unix timestamp for 2024-01-01T00:00:00Z in milliseconds
+        let timestamp_ms = 1704067200000i64;
+        client.put_timestamp("created_at", timestamp_ms).unwrap();
+        assert_eq!(client.get_timestamp("created_at").unwrap(), Some(timestamp_ms));
+
+        // Test with current time (approximate)
+        let now_ms = 1735689600000i64; // 2025-01-01T00:00:00Z
+        client.put_timestamp("updated_at", now_ms).unwrap();
+        assert_eq!(client.get_timestamp("updated_at").unwrap(), Some(now_ms));
+
+        // Verify persistence
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_timestamp("created_at").unwrap(), Some(timestamp_ms));
+        assert_eq!(loaded.get_timestamp("updated_at").unwrap(), Some(now_ms));
+    }
+
+    #[test]
+    fn timestamp_change_sync() {
+        let mut client1 = RedisAutomergeClient::new();
+
+        // Create timestamp with change tracking
+        let timestamp_ms = 1704067200000i64;
+        let change1 = client1.put_timestamp_with_change("event_time", timestamp_ms).unwrap().unwrap();
+
+        // Apply change to client2
+        let mut client2 = RedisAutomergeClient::new();
+        client2.apply_change_bytes(&change1).unwrap();
+
+        // Both clients should have same timestamp value
+        assert_eq!(client1.get_timestamp("event_time").unwrap(), Some(timestamp_ms));
+        assert_eq!(client2.get_timestamp("event_time").unwrap(), Some(timestamp_ms));
+    }
+
+    #[test]
+    fn timestamp_nested_path() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Test nested timestamp field
+        let timestamp_ms = 1704067200000i64;
+        client.put_timestamp("event.created_at", timestamp_ms).unwrap();
+        assert_eq!(
+            client.get_timestamp("event.created_at").unwrap(),
+            Some(timestamp_ms)
+        );
+
+        // Verify persistence
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(
+            loaded.get_timestamp("event.created_at").unwrap(),
+            Some(timestamp_ms)
+        );
+    }
+
+    #[test]
+    fn to_json_with_timestamps() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Unix timestamp for 2024-01-01T00:00:00Z in milliseconds
+        let timestamp_ms = 1704067200000i64;
+        client.put_timestamp("created_at", timestamp_ms).unwrap();
+        client.put_text("name", "Event").unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Timestamp should be exported as ISO 8601 UTC datetime string
+        assert_eq!(parsed["created_at"], "2024-01-01T00:00:00+00:00");
+        assert_eq!(parsed["name"], "Event");
+
+        // Verify the timestamp is a string, not a number
+        assert!(parsed["created_at"].is_string());
+    }
+
+    #[test]
+    fn to_json_with_multiple_timestamps() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Different timestamps
+        let created = 1704067200000i64;  // 2024-01-01T00:00:00Z
+        let updated = 1735689600000i64;  // 2025-01-01T00:00:00Z
+
+        client.put_timestamp("timestamps.created", created).unwrap();
+        client.put_timestamp("timestamps.updated", updated).unwrap();
+        client.put_int("version", 1).unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Both timestamps should be formatted as ISO 8601 strings
+        assert_eq!(parsed["timestamps"]["created"], "2024-01-01T00:00:00+00:00");
+        assert_eq!(parsed["timestamps"]["updated"], "2025-01-01T00:00:00+00:00");
+        assert_eq!(parsed["version"], 1);
+    }
+
+    #[test]
+    fn get_nonexistent_timestamp() {
+        let client = RedisAutomergeClient::new();
+        assert_eq!(client.get_timestamp("missing").unwrap(), None);
+    }
+
+    #[test]
+    fn mixed_types_with_timestamp() {
+        let mut client = RedisAutomergeClient::new();
+
+        let timestamp_ms = 1704067200000i64;
+        client.put_text("name", "Alice").unwrap();
+        client.put_int("age", 30).unwrap();
+        client.put_timestamp("joined_at", timestamp_ms).unwrap();
+        client.put_bool("active", true).unwrap();
+
+        assert_eq!(client.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(client.get_int("age").unwrap(), Some(30));
+        assert_eq!(client.get_timestamp("joined_at").unwrap(), Some(timestamp_ms));
+        assert_eq!(client.get_bool("active").unwrap(), Some(true));
+
+        // Verify persistence
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_text("name").unwrap(), Some("Alice".to_string()));
+        assert_eq!(loaded.get_int("age").unwrap(), Some(30));
+        assert_eq!(loaded.get_timestamp("joined_at").unwrap(), Some(timestamp_ms));
+        assert_eq!(loaded.get_bool("active").unwrap(), Some(true));
     }
 }
