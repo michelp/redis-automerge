@@ -1854,6 +1854,7 @@ impl RedisAutomergeClient {
                                 Ok(JsonValue::Null)
                             }
                         }
+                        ScalarValue::Counter(c) => Ok(JsonValue::Number(i64::from(c).into())),
                         ScalarValue::Boolean(b) => Ok(JsonValue::Bool(*b)),
                         ScalarValue::Null => Ok(JsonValue::Null),
                         _ => Ok(JsonValue::Null),

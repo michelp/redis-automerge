@@ -1682,6 +1682,27 @@ mod tests {
     }
 
     #[test]
+    fn to_json_with_counters() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_counter("views", 100).unwrap();
+        client.inc_counter("views", 50).unwrap();
+        client.put_counter("clicks", 0).unwrap();
+        client.put_text("name", "Article").unwrap();
+
+        let json = client.to_json(false).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        // Counters should be exported as JSON integers
+        assert_eq!(parsed["views"], 150);
+        assert_eq!(parsed["clicks"], 0);
+        assert_eq!(parsed["name"], "Article");
+
+        // Verify the counter values are integers, not objects or null
+        assert!(parsed["views"].is_i64());
+        assert!(parsed["clicks"].is_i64());
+    }
+
+    #[test]
     fn to_json_nested_objects() {
         let mut client = RedisAutomergeClient::new();
         client.put_text("user.profile.name", "Bob").unwrap();
