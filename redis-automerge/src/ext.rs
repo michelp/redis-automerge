@@ -760,6 +760,220 @@ impl RedisAutomergeClient {
         Ok(None)
     }
 
+    /// Insert a counter value using a path (e.g., "stats.views", "counters[0]", or "$.stats.views").
+    /// Creates intermediate maps as needed. Array indices must already exist.
+    ///
+    /// Counters are CRDT values that support increment operations with proper
+    /// conflict resolution across distributed systems.
+    pub fn put_counter(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+        let mut tx = self.doc.transaction();
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
+
+        // Put counter value
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.put(&parent_obj, key.as_str(), ScalarValue::Counter(value.into()))?;
+            }
+            PathSegment::Index(idx) => {
+                tx.put(&parent_obj, *idx, ScalarValue::Counter(value.into()))?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert a counter value and return the raw change bytes.
+    pub fn put_counter_with_change(
+        &mut self,
+        path: &str,
+        value: i64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+        let mut tx = self.doc.transaction();
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
+
+        // Put counter value
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.put(&parent_obj, key.as_str(), ScalarValue::Counter(value.into()))?;
+            }
+            PathSegment::Index(idx) => {
+                tx.put(&parent_obj, *idx, ScalarValue::Counter(value.into()))?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Retrieve a counter value using a path (e.g., "stats.views", "counters[0]", or "$.stats.views").
+    /// Returns the current counter value as an i64.
+    pub fn get_counter(&self, path: &str) -> Result<Option<i64>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Ok(None);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        if let Some((Value::Scalar(s), _)) =
+            get_value_from_parent(&self.doc, &parent_obj, &field_name[0])?
+        {
+            if let ScalarValue::Counter(c) = s.as_ref() {
+                return Ok(Some(*c as i64));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Increment a counter at the specified path by the given delta.
+    ///
+    /// This uses Automerge's CRDT counter increment operation, which properly
+    /// merges concurrent increments from different replicas.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the counter field
+    /// * `delta` - Amount to increment (can be negative to decrement)
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_counter("views", 0).unwrap();
+    /// client.inc_counter("views", 1).unwrap();
+    /// client.inc_counter("views", 5).unwrap();
+    ///
+    /// assert_eq!(client.get_counter("views").unwrap(), Some(6));
+    /// ```
+    pub fn inc_counter(&mut self, path: &str, delta: i64) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object (don't create it if it doesn't exist for increment)
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        let mut tx = self.doc.transaction();
+
+        // Increment the counter
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.increment(&parent_obj, key.as_str(), delta)?;
+            }
+            PathSegment::Index(idx) => {
+                tx.increment(&parent_obj, *idx, delta)?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Increment a counter and return the raw change bytes.
+    pub fn inc_counter_with_change(
+        &mut self,
+        path: &str,
+        delta: i64,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object (don't create it if it doesn't exist for increment)
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        let mut tx = self.doc.transaction();
+
+        // Increment the counter
+        match &field_name[0] {
+            PathSegment::Key(key) => {
+                tx.increment(&parent_obj, key.as_str(), delta)?;
+            }
+            PathSegment::Index(idx) => {
+                tx.increment(&parent_obj, *idx, delta)?;
+            }
+        }
+
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Apply a unified diff to update text value at the specified path.
     ///
     /// This is more efficient than replacing entire text values when only small

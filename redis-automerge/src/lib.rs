@@ -463,6 +463,85 @@ fn am_getbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
 }
 
+fn am_putcounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let value: i64 = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("value must be an integer"))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .put_counter_with_change(field, value)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.putcounter", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putcounter", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_getcounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .get_counter(field)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(value) => Ok(RedisValue::Integer(value)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
+fn am_inccounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 4 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let field = parse_utf8_field(&args[2], "field")?;
+    let delta: i64 = args[3]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("delta must be an integer"))?;
+
+    // Capture change bytes before calling ctx.call
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .inc_counter_with_change(field, delta)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    }; // key is dropped here
+
+    // Publish change to subscribers if one was generated
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.inccounter", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.inccounter", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
 fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() != 3 {
         return Err(RedisError::WrongArity);
@@ -837,6 +916,9 @@ redis_module! {
         ["am.getdouble", am_getdouble, "readonly", 1, 1, 1],
         ["am.putbool", am_putbool, "write deny-oom", 1, 1, 1],
         ["am.getbool", am_getbool, "readonly", 1, 1, 1],
+        ["am.putcounter", am_putcounter, "write deny-oom", 1, 1, 1],
+        ["am.getcounter", am_getcounter, "readonly", 1, 1, 1],
+        ["am.inccounter", am_inccounter, "write deny-oom", 1, 1, 1],
         ["am.createlist", am_createlist, "write deny-oom", 1, 1, 1],
         ["am.appendtext", am_appendtext, "write deny-oom", 1, 1, 1],
         ["am.appendint", am_appendint, "write deny-oom", 1, 1, 1],
@@ -936,12 +1018,74 @@ mod tests {
     }
 
     #[test]
+    fn put_and_get_counter_roundtrip() {
+        let mut client = RedisAutomergeClient::new();
+        client.put_counter("views", 42).unwrap();
+        assert_eq!(client.get_counter("views").unwrap(), Some(42));
+
+        client.put_counter("clicks", 0).unwrap();
+        assert_eq!(client.get_counter("clicks").unwrap(), Some(0));
+
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_counter("views").unwrap(), Some(42));
+        assert_eq!(loaded.get_counter("clicks").unwrap(), Some(0));
+    }
+
+    #[test]
+    fn inc_counter_operations() {
+        let mut client = RedisAutomergeClient::new();
+
+        // Initialize counter
+        client.put_counter("count", 0).unwrap();
+        assert_eq!(client.get_counter("count").unwrap(), Some(0));
+
+        // Increment
+        client.inc_counter("count", 5).unwrap();
+        assert_eq!(client.get_counter("count").unwrap(), Some(5));
+
+        // Increment again
+        client.inc_counter("count", 3).unwrap();
+        assert_eq!(client.get_counter("count").unwrap(), Some(8));
+
+        // Decrement (negative increment)
+        client.inc_counter("count", -2).unwrap();
+        assert_eq!(client.get_counter("count").unwrap(), Some(6));
+
+        // Verify persistence
+        let bytes = client.save();
+        let loaded = RedisAutomergeClient::load(&bytes).unwrap();
+        assert_eq!(loaded.get_counter("count").unwrap(), Some(6));
+    }
+
+    #[test]
+    fn counter_change_sync() {
+        let mut client1 = RedisAutomergeClient::new();
+
+        // Create counter with change tracking
+        let change1 = client1.put_counter_with_change("views", 0).unwrap().unwrap();
+        let change2 = client1.inc_counter_with_change("views", 5).unwrap().unwrap();
+        let change3 = client1.inc_counter_with_change("views", 3).unwrap().unwrap();
+
+        // Apply changes to client2
+        let mut client2 = RedisAutomergeClient::new();
+        client2.apply_change_bytes(&change1).unwrap();
+        client2.apply_change_bytes(&change2).unwrap();
+        client2.apply_change_bytes(&change3).unwrap();
+
+        // Both clients should have same counter value
+        assert_eq!(client1.get_counter("views").unwrap(), Some(8));
+        assert_eq!(client2.get_counter("views").unwrap(), Some(8));
+    }
+
+    #[test]
     fn get_nonexistent_fields() {
         let client = RedisAutomergeClient::new();
         assert_eq!(client.get_text("missing").unwrap(), None);
         assert_eq!(client.get_int("missing").unwrap(), None);
         assert_eq!(client.get_double("missing").unwrap(), None);
         assert_eq!(client.get_bool("missing").unwrap(), None);
+        assert_eq!(client.get_counter("missing").unwrap(), None);
     }
 
     #[test]
@@ -951,11 +1095,13 @@ mod tests {
         client.put_int("age", 30).unwrap();
         client.put_double("height", 5.6).unwrap();
         client.put_bool("verified", true).unwrap();
+        client.put_counter("visits", 100).unwrap();
 
         assert_eq!(client.get_text("name").unwrap(), Some("Alice".to_string()));
         assert_eq!(client.get_int("age").unwrap(), Some(30));
         assert_eq!(client.get_double("height").unwrap(), Some(5.6));
         assert_eq!(client.get_bool("verified").unwrap(), Some(true));
+        assert_eq!(client.get_counter("visits").unwrap(), Some(100));
 
         let bytes = client.save();
         let loaded = RedisAutomergeClient::load(&bytes).unwrap();
@@ -963,6 +1109,7 @@ mod tests {
         assert_eq!(loaded.get_int("age").unwrap(), Some(30));
         assert_eq!(loaded.get_double("height").unwrap(), Some(5.6));
         assert_eq!(loaded.get_bool("verified").unwrap(), Some(true));
+        assert_eq!(loaded.get_counter("visits").unwrap(), Some(100));
     }
 
     #[test]

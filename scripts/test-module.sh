@@ -53,22 +53,47 @@ val=$(redis-cli -h "$HOST" am.getbool doc disabled)
 test "$val" = "0"
 echo "   ✓ Boolean false works"
 
+# Test counter operations
+echo "5a. Testing counter operations..."
+redis-cli -h "$HOST" am.putcounter doc views 0
+val=$(redis-cli -h "$HOST" am.getcounter doc views)
+test "$val" = "0"
+echo "   ✓ Counter get/set works"
+
+redis-cli -h "$HOST" am.inccounter doc views 5
+val=$(redis-cli -h "$HOST" am.getcounter doc views)
+test "$val" = "5"
+echo "   ✓ Counter increment works"
+
+redis-cli -h "$HOST" am.inccounter doc views 3
+val=$(redis-cli -h "$HOST" am.getcounter doc views)
+test "$val" = "8"
+echo "   ✓ Counter multiple increments work"
+
+redis-cli -h "$HOST" am.inccounter doc views -2
+val=$(redis-cli -h "$HOST" am.getcounter doc views)
+test "$val" = "6"
+echo "   ✓ Counter decrement (negative increment) works"
+
 # Test mixed types in same document
 echo "6. Testing mixed types..."
 redis-cli -h "$HOST" am.puttext doc name "Alice"
 redis-cli -h "$HOST" am.putint doc count 100
 redis-cli -h "$HOST" am.putdouble doc score 95.5
 redis-cli -h "$HOST" am.putbool doc verified 1
+redis-cli -h "$HOST" am.putcounter doc likes 42
 
 name=$(redis-cli -h "$HOST" --raw am.gettext doc name)
 count=$(redis-cli -h "$HOST" am.getint doc count)
 score=$(redis-cli -h "$HOST" am.getdouble doc score)
 verified=$(redis-cli -h "$HOST" am.getbool doc verified)
+likes=$(redis-cli -h "$HOST" am.getcounter doc likes)
 
 test "$name" = "Alice"
 test "$count" = "100"
 test "$score" = "95.5"
 test "$verified" = "1"
+test "$likes" = "42"
 echo "   ✓ Mixed types in single document work"
 
 # Persist and reload the document with all types
@@ -95,11 +120,13 @@ name=$(redis-cli -h "$HOST" --raw am.gettext doc name)
 count=$(redis-cli -h "$HOST" am.getint doc count)
 score=$(redis-cli -h "$HOST" am.getdouble doc score)
 verified=$(redis-cli -h "$HOST" am.getbool doc verified)
+likes=$(redis-cli -h "$HOST" am.getcounter doc likes)
 
 test "$name" = "Alice"
 test "$count" = "100"
 test "$score" = "95.5"
 test "$verified" = "1"
+test "$likes" = "42"
 echo "   ✓ All types persist and reload correctly"
 
 # Test non-existent fields return null
@@ -139,6 +166,15 @@ val=$(redis-cli -h "$HOST" am.getbool doc2 flags.features.enabled)
 test "$val" = "1"
 echo "   ✓ Nested boolean paths work"
 
+# Test nested counter paths
+redis-cli -h "$HOST" am.putcounter doc2 stats.pageviews 100
+val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
+test "$val" = "100"
+redis-cli -h "$HOST" am.inccounter doc2 stats.pageviews 50
+val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
+test "$val" = "150"
+echo "   ✓ Nested counter paths work"
+
 # Test JSONPath-style with $ prefix
 echo "10. Testing JSONPath-style paths with $ prefix..."
 redis-cli -h "$HOST" del doc3
@@ -175,6 +211,8 @@ val=$(redis-cli -h "$HOST" am.getdouble doc2 metrics.cpu.usage)
 test "$val" = "75.5"
 val=$(redis-cli -h "$HOST" am.getbool doc2 flags.features.enabled)
 test "$val" = "1"
+val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
+test "$val" = "150"
 echo "   ✓ Nested paths persist and reload correctly"
 
 # Test mixing flat and nested keys
@@ -324,6 +362,19 @@ redis-cli -h "$HOST" del notif_test6
 redis-cli -h "$HOST" am.new notif_test6
 test_notification "notif_test6" "am.putbool" "redis-cli -h $HOST am.putbool notif_test6 field true"
 echo "   ✓ AM.PUTBOOL emits keyspace notification"
+
+echo "25a. Testing AM.PUTCOUNTER notification..."
+redis-cli -h "$HOST" del notif_test6a
+redis-cli -h "$HOST" am.new notif_test6a
+test_notification "notif_test6a" "am.putcounter" "redis-cli -h $HOST am.putcounter notif_test6a field 10"
+echo "   ✓ AM.PUTCOUNTER emits keyspace notification"
+
+echo "25b. Testing AM.INCCOUNTER notification..."
+redis-cli -h "$HOST" del notif_test6b
+redis-cli -h "$HOST" am.new notif_test6b
+redis-cli -h "$HOST" am.putcounter notif_test6b field 10
+test_notification "notif_test6b" "am.inccounter" "redis-cli -h $HOST am.inccounter notif_test6b field 5"
+echo "   ✓ AM.INCCOUNTER emits keyspace notification"
 
 echo "26. Testing AM.CREATELIST notification..."
 redis-cli -h "$HOST" del notif_test7
@@ -662,6 +713,59 @@ else
     [ -f /tmp/changes_test39.txt ] && cat /tmp/changes_test39.txt
 fi
 rm -f /tmp/changes_test39.txt
+
+echo "39a. Testing AM.PUTCOUNTER change publishing..."
+redis-cli -h "$HOST" del change_pub_counter > /dev/null
+redis-cli -h "$HOST" am.new change_pub_counter > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_counter" > /tmp/changes_test39a.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.PUTCOUNTER operation
+redis-cli -h "$HOST" am.putcounter change_pub_counter views 100 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test39a.txt ] && grep -q "changes:change_pub_counter" /tmp/changes_test39a.txt; then
+    echo "   ✓ AM.PUTCOUNTER publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.PUTCOUNTER"
+    [ -f /tmp/changes_test39a.txt ] && cat /tmp/changes_test39a.txt
+fi
+rm -f /tmp/changes_test39a.txt
+
+echo "39b. Testing AM.INCCOUNTER change publishing..."
+redis-cli -h "$HOST" del change_pub_inccounter > /dev/null
+redis-cli -h "$HOST" am.new change_pub_inccounter > /dev/null
+redis-cli -h "$HOST" am.putcounter change_pub_inccounter likes 10 > /dev/null
+
+# Subscribe to changes channel
+timeout 2 redis-cli -h "$HOST" SUBSCRIBE "changes:change_pub_inccounter" > /tmp/changes_test39b.txt 2>&1 &
+sub_pid=$!
+sleep 0.3
+
+# Perform AM.INCCOUNTER operation
+redis-cli -h "$HOST" am.inccounter change_pub_inccounter likes 5 > /dev/null 2>&1
+sleep 0.3
+
+# Kill subscriber
+kill $sub_pid 2>/dev/null || true
+wait $sub_pid 2>/dev/null || true
+
+# Verify change was published
+if [ -f /tmp/changes_test39b.txt ] && grep -q "changes:change_pub_inccounter" /tmp/changes_test39b.txt; then
+    echo "   ✓ AM.INCCOUNTER publishes changes to changes:key channel"
+else
+    echo "   ✗ Expected change publication not found for AM.INCCOUNTER"
+    [ -f /tmp/changes_test39b.txt ] && cat /tmp/changes_test39b.txt
+fi
+rm -f /tmp/changes_test39b.txt
 
 echo "40. Testing AM.PUTDIFF change publishing..."
 redis-cli -h "$HOST" del change_pub_diff > /dev/null
@@ -1578,6 +1682,8 @@ redis-cli -h "$HOST" am.puttext comprehensive_persist greeting "Hello World" > /
 redis-cli -h "$HOST" am.putint comprehensive_persist count 42 > /dev/null
 redis-cli -h "$HOST" am.putdouble comprehensive_persist pi 3.14159 > /dev/null
 redis-cli -h "$HOST" am.putbool comprehensive_persist active true > /dev/null
+redis-cli -h "$HOST" am.putcounter comprehensive_persist views 1000 > /dev/null
+redis-cli -h "$HOST" am.inccounter comprehensive_persist views 500 > /dev/null
 
 # Add nested data
 redis-cli -h "$HOST" am.puttext comprehensive_persist user.name "Bob" > /dev/null
@@ -1609,6 +1715,9 @@ if restart_redis; then
 
     val=$(redis-cli -h "$HOST" am.getbool comprehensive_persist active)
     [ "$val" != "1" ] && { echo "   ✗ Bool wrong: $val"; errors=$((errors+1)); }
+
+    val=$(redis-cli -h "$HOST" am.getcounter comprehensive_persist views)
+    [ "$val" != "1500" ] && { echo "   ✗ Counter wrong: $val"; errors=$((errors+1)); }
 
     val=$(redis-cli -h "$HOST" --raw am.gettext comprehensive_persist user.name)
     [ "$val" != "Bob" ] && { echo "   ✗ Nested text wrong: $val"; errors=$((errors+1)); }

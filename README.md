@@ -11,7 +11,8 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 - **JSON import/export** - seamlessly convert between Automerge and JSON formats
 - **Automatic conflict resolution** using Automerge CRDTs
 - **Nested data structures** - maps and arrays with dot notation and array indices
-- **Type-safe operations** - text, integers, doubles, and booleans
+- **Type-safe operations** - text, integers, doubles, booleans, and counters
+- **CRDT counters** - distributed counters with proper conflict-free increment operations
 - **Real-time synchronization** - pub/sub change notifications for live updates
 - **Efficient text editing** - splice operations and unified diff support
 - **Change history** - retrieve document changes for synchronization
@@ -303,6 +304,61 @@ AM.GETBOOL mydoc user.active
 # Returns: 1
 ```
 
+#### `AM.PUTCOUNTER <key> <path> <value>`
+Set a counter value. Counters are special CRDT types that support distributed increment operations with proper conflict resolution across multiple clients.
+
+```redis
+AM.PUTCOUNTER mydoc stats.views 0
+AM.PUTCOUNTER mydoc metrics.requests 1000
+```
+
+#### `AM.GETCOUNTER <key> <path>`
+Get a counter value.
+
+```redis
+AM.GETCOUNTER mydoc stats.views
+# Returns: 0
+```
+
+#### `AM.INCCOUNTER <key> <path> <delta>`
+Increment a counter by the specified delta. Unlike regular integers, counter increments from different clients are automatically merged without conflicts.
+
+```redis
+# Increment by positive value
+AM.INCCOUNTER mydoc stats.views 1
+AM.INCCOUNTER mydoc stats.views 5
+
+# Decrement using negative value
+AM.INCCOUNTER mydoc stats.errors -1
+```
+
+**Counter vs Integer:**
+- **Integers** (`AM.PUTINT`/`AM.GETINT`) - Last write wins. If two clients set different values, one overwrites the other.
+- **Counters** (`AM.PUTCOUNTER`/`AM.GETCOUNTER`/`AM.INCCOUNTER`) - Increments merge correctly. If two clients both increment by 1, the final value is +2.
+
+**Use counters for:**
+- Page view counters that multiple clients increment
+- Like/vote counts from distributed clients
+- Request counters across multiple servers
+- Any metric that needs correct distributed counting
+
+**Example of counter conflict resolution:**
+
+```redis
+# Initial state
+AM.PUTCOUNTER doc1 views 0
+
+# Client A increments by 5
+AM.INCCOUNTER doc1 views 5
+
+# Client B (offline) increments by 3
+AM.INCCOUNTER doc2 views 3
+
+# When synchronized, result is 8 (not 3 or 5)
+AM.GETCOUNTER doc1 views
+# Returns: 8
+```
+
 ### List Operations
 
 #### `AM.CREATELIST <key> <path>`
@@ -359,7 +415,7 @@ Redis-Automerge provides built-in support for real-time synchronization using Re
 
 ### Change Notifications
 
-All write operations (`AM.PUTTEXT`, `AM.SPLICETEXT`, `AM.APPLY`, etc.) automatically publish changes to a Redis pub/sub channel:
+All write operations (`AM.PUTTEXT`, `AM.PUTINT`, `AM.PUTDOUBLE`, `AM.PUTBOOL`, `AM.PUTCOUNTER`, `AM.INCCOUNTER`, `AM.SPLICETEXT`, `AM.APPLY`, etc.) automatically publish changes to a Redis pub/sub channel:
 
 ```
 Channel: changes:{key}
@@ -524,6 +580,42 @@ AM.GETBOOL config:main cache.enabled
 
 AM.LISTLEN config:main features
 # Returns: 3
+```
+
+### Analytics with Counters
+
+```redis
+# Create analytics document
+AM.NEW analytics:page123
+
+# Initialize counters
+AM.PUTCOUNTER analytics:page123 views 0
+AM.PUTCOUNTER analytics:page123 likes 0
+AM.PUTCOUNTER analytics:page123 shares 0
+
+# Multiple clients can increment concurrently
+# Client 1:
+AM.INCCOUNTER analytics:page123 views 1
+AM.INCCOUNTER analytics:page123 likes 1
+
+# Client 2 (simultaneously):
+AM.INCCOUNTER analytics:page123 views 1
+AM.INCCOUNTER analytics:page123 shares 1
+
+# All increments are properly merged
+AM.GETCOUNTER analytics:page123 views
+# Returns: 2 (both increments counted)
+
+AM.GETCOUNTER analytics:page123 likes
+# Returns: 1
+
+AM.GETCOUNTER analytics:page123 shares
+# Returns: 1
+
+# Decrement for corrections
+AM.INCCOUNTER analytics:page123 views -1
+AM.GETCOUNTER analytics:page123 views
+# Returns: 1
 ```
 
 ### JSON Import/Export
