@@ -1434,7 +1434,7 @@ restart_redis() {
     return 1
 }
 
-echo "74. Testing basic AOF persistence after restart..."
+echo "83. Testing basic AOF persistence after restart..."
 redis-cli -h "$HOST" del persist_test1 > /dev/null
 redis-cli -h "$HOST" am.new persist_test1 > /dev/null
 redis-cli -h "$HOST" am.puttext persist_test1 message "Persisted data" > /dev/null
@@ -1460,7 +1460,7 @@ else
     echo "   ⚠ Skipped restart test (Docker not available)"
 fi
 
-echo "75. Testing multiple documents persist after restart..."
+echo "84. Testing multiple documents persist after restart..."
 redis-cli -h "$HOST" del persist_doc1 persist_doc2 persist_doc3 > /dev/null
 
 # Create multiple documents with different data
@@ -1508,7 +1508,7 @@ else
     echo "   ⚠ Skipped restart test (Docker not available)"
 fi
 
-echo "76. Testing nested paths persist after restart..."
+echo "85. Testing nested paths persist after restart..."
 redis-cli -h "$HOST" del persist_nested > /dev/null
 redis-cli -h "$HOST" am.new persist_nested > /dev/null
 redis-cli -h "$HOST" am.puttext persist_nested user.profile.name "Alice" > /dev/null
@@ -1539,7 +1539,7 @@ else
     echo "   ⚠ Skipped restart test (Docker not available)"
 fi
 
-echo "77. Testing persistence after AOF rewrite..."
+echo "86. Testing persistence after AOF rewrite..."
 redis-cli -h "$HOST" del aof_rewrite_test > /dev/null
 redis-cli -h "$HOST" am.new aof_rewrite_test > /dev/null
 redis-cli -h "$HOST" am.puttext aof_rewrite_test data "Before rewrite" > /dev/null
@@ -1569,7 +1569,7 @@ else
     echo "   ⚠ Skipped restart test (Docker not available)"
 fi
 
-echo "78. Testing comprehensive persistence scenario..."
+echo "87. Testing comprehensive persistence scenario..."
 redis-cli -h "$HOST" del comprehensive_persist > /dev/null
 redis-cli -h "$HOST" am.new comprehensive_persist > /dev/null
 
