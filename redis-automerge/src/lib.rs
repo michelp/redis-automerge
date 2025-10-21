@@ -1628,7 +1628,7 @@ mod tests {
         client.put_text("field1", "value1").unwrap();
         client.put_text("field2", "value2").unwrap();
 
-        // Get all changes (empty have_deps)
+        // Get all changes (empty have_deps) - get_changes doesn't need mut
         let changes = client.get_changes(&[]);
 
         // Should return 2 changes
