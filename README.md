@@ -58,18 +58,6 @@ docker compose up redis
 docker compose run --build --rm test
 ```
 
-## Demo Application
-
-For a complete collaborative text editor application built with this module, see:
-- **[Palimset](https://github.com/michelp/palimset)** - Real-time collaborative editor with OAuth, PostgreSQL archiving, and production deployment
-
-Palimset demonstrates:
-- Real-time synchronization using `AM.APPLY` and `AM.CHANGES`
-- WebSocket pub/sub for instant updates
-- Text editing with `AM.SPLICETEXT`
-- Local-first architecture with automatic merging
-- OAuth authentication and document management
-
 ## Redis Commands
 
 ### Document Management
@@ -655,27 +643,6 @@ This generates detailed API documentation for the Rust code and opens it in your
        │                       │                        │
        │  4. Both Synced       │                        │
 ```
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed guidelines.
-
-### Quick Start
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes with tests
-4. Ensure all checks pass:
-   ```bash
-   cargo test --manifest-path redis-automerge/Cargo.toml
-   cargo fmt --manifest-path redis-automerge/Cargo.toml
-   cargo clippy --manifest-path redis-automerge/Cargo.toml
-   docker compose run --build --rm test
-   ```
-5. Commit and push (`git push origin feature/amazing-feature`)
-6. Open a Pull Request
-
-All PRs are automatically tested via GitHub Actions.
 
 ## Resources
 
