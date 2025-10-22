@@ -15,6 +15,7 @@
 //! - `AM.SAVE <key>` - Save a document to binary format
 //! - `AM.APPLY <key> <change>...` - Apply Automerge changes to a document
 //! - `AM.CHANGES <key> [<hash>...]` - Get changes not in the provided hash list (empty = all changes)
+//! - `AM.NUMCHANGES <key> [<hash>...]` - Get count of changes not in the provided hash list (empty = all changes)
 //! - `AM.TOJSON <key> [pretty]` - Export document to JSON format
 //! - `AM.FROMJSON <key> <json>` - Create document from JSON format
 //!
@@ -829,6 +830,32 @@ fn am_changes(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::Array(result))
 }
 
+fn am_numchanges(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() < 2 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let key = ctx.open_key_writable(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    // Parse have_deps from remaining arguments
+    let mut have_deps = Vec::new();
+    for hash_arg in &args[2..] {
+        let bytes = hash_arg.as_slice();
+        let hash = ChangeHash::try_from(bytes)
+            .map_err(|e| RedisError::String(format!("invalid change hash: {:?}", e)))?;
+        have_deps.push(hash);
+    }
+
+    // Get changes count
+    let changes = client.get_changes(&have_deps);
+    let count = changes.len();
+
+    Ok(RedisValue::Integer(count as i64))
+}
+
 fn am_tojson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     // AM.TOJSON <key> [pretty]
     if args.len() < 2 || args.len() > 3 {
@@ -953,6 +980,7 @@ redis_module! {
         ["am.save", am_save, "readonly", 1, 1, 1],
         ["am.apply", am_apply, "write deny-oom", 1, 1, 1],
         ["am.changes", am_changes, "readonly", 1, 1, 1],
+        ["am.numchanges", am_numchanges, "readonly", 1, 1, 1],
         ["am.tojson", am_tojson, "readonly", 1, 1, 1],
         ["am.fromjson", am_fromjson, "write deny-oom", 1, 1, 1],
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],

@@ -40,6 +40,7 @@ use automerge::{
     transaction::Transactable, Automerge, AutomergeError, Change, ChangeHash, ObjId, ReadDoc,
     ScalarValue, Value, ROOT,
 };
+use chrono::{DateTime, Utc};
 
 /// Represents a diff operation parsed from unified diff format
 #[derive(Debug, PartialEq)]
@@ -1974,16 +1975,10 @@ impl RedisAutomergeClient {
                         }
                         ScalarValue::Counter(c) => Ok(JsonValue::Number(i64::from(c).into())),
                         ScalarValue::Timestamp(ts) => {
-                            // Convert Unix timestamp (milliseconds) to ISO 8601 UTC datetime string
-                            use chrono::{TimeZone, Utc};
-                            let seconds = ts / 1000;
-                            let nanos = ((ts % 1000) * 1_000_000) as u32;
-                            if let Some(dt) = Utc.timestamp_opt(seconds, nanos).single() {
-                                Ok(JsonValue::String(dt.to_rfc3339()))
-                            } else {
-                                // If timestamp is invalid, return null
-                                Ok(JsonValue::Null)
-                            }
+                            // Convert Unix timestamp (milliseconds) to ISO 8601 string
+                            let dt = DateTime::from_timestamp_millis(*ts)
+                                .unwrap_or_else(|| DateTime::<Utc>::UNIX_EPOCH);
+                            Ok(JsonValue::String(dt.to_rfc3339()))
                         }
                         ScalarValue::Boolean(b) => Ok(JsonValue::Bool(*b)),
                         ScalarValue::Null => Ok(JsonValue::Null),

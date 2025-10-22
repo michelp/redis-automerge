@@ -2,6 +2,25 @@
 set -euo pipefail
 HOST="${REDIS_HOST:-127.0.0.1}"
 
+# Assert function with helpful error messages
+assert_equals() {
+    local actual="$1"
+    local expected="$2"
+    local description="${3:-}"
+
+    if [ "$actual" != "$expected" ]; then
+        echo ""
+        echo "❌ ASSERTION FAILED"
+        if [ -n "$description" ]; then
+            echo "   Description: $description"
+        fi
+        echo "   Expected: '$expected'"
+        echo "   Actual:   '$actual'"
+        echo ""
+        exit 1
+    fi
+}
+
 echo "Testing Redis Automerge Module..."
 
 # Install jq for JSON validation
@@ -20,61 +39,61 @@ echo "2. Testing text operations..."
 redis-cli -h "$HOST" am.new doc
 redis-cli -h "$HOST" am.puttext doc greeting "hello world"
 val=$(redis-cli -h "$HOST" --raw am.gettext doc greeting)
-test "$val" = "hello world"
+assert_equals "$val" "hello world"
 echo "   ✓ Text get/set works"
 
 # Test integer operations
 echo "3. Testing integer operations..."
 redis-cli -h "$HOST" am.putint doc age 42
 val=$(redis-cli -h "$HOST" am.getint doc age)
-test "$val" = "42"
+assert_equals "$val" "42"
 echo "   ✓ Integer get/set works"
 
 # Test negative integers
 redis-cli -h "$HOST" am.putint doc temperature -10
 val=$(redis-cli -h "$HOST" am.getint doc temperature)
-test "$val" = "-10"
+assert_equals "$val" "-10"
 echo "   ✓ Negative integers work"
 
 # Test double operations
 echo "4. Testing double operations..."
 redis-cli -h "$HOST" am.putdouble doc pi 3.14159
 val=$(redis-cli -h "$HOST" am.getdouble doc pi)
-test "$val" = "3.14159"
+assert_equals "$val" "3.14159"
 echo "   ✓ Double get/set works"
 
 # Test boolean operations
 echo "5. Testing boolean operations..."
 redis-cli -h "$HOST" am.putbool doc active true
 val=$(redis-cli -h "$HOST" am.getbool doc active)
-test "$val" = "1"
+assert_equals "$val" "1"
 echo "   ✓ Boolean true works"
 
 redis-cli -h "$HOST" am.putbool doc disabled false
 val=$(redis-cli -h "$HOST" am.getbool doc disabled)
-test "$val" = "0"
+assert_equals "$val" "0"
 echo "   ✓ Boolean false works"
 
 # Test counter operations
 echo "5a. Testing counter operations..."
 redis-cli -h "$HOST" am.putcounter doc views 0
 val=$(redis-cli -h "$HOST" am.getcounter doc views)
-test "$val" = "0"
+assert_equals "$val" "0"
 echo "   ✓ Counter get/set works"
 
 redis-cli -h "$HOST" am.inccounter doc views 5
 val=$(redis-cli -h "$HOST" am.getcounter doc views)
-test "$val" = "5"
+assert_equals "$val" "5"
 echo "   ✓ Counter increment works"
 
 redis-cli -h "$HOST" am.inccounter doc views 3
 val=$(redis-cli -h "$HOST" am.getcounter doc views)
-test "$val" = "8"
+assert_equals "$val" "8"
 echo "   ✓ Counter multiple increments work"
 
 redis-cli -h "$HOST" am.inccounter doc views -2
 val=$(redis-cli -h "$HOST" am.getcounter doc views)
-test "$val" = "6"
+assert_equals "$val" "6"
 echo "   ✓ Counter decrement (negative increment) works"
 
 # Test mixed types in same document
@@ -91,11 +110,11 @@ score=$(redis-cli -h "$HOST" am.getdouble doc score)
 verified=$(redis-cli -h "$HOST" am.getbool doc verified)
 likes=$(redis-cli -h "$HOST" am.getcounter doc likes)
 
-test "$name" = "Alice"
-test "$count" = "100"
-test "$score" = "95.5"
-test "$verified" = "1"
-test "$likes" = "42"
+assert_equals "$name" "Alice"
+assert_equals "$count" "100"
+assert_equals "$score" "95.5"
+assert_equals "$verified" "1"
+assert_equals "$likes" "42"
 echo "   ✓ Mixed types in single document work"
 
 # Persist and reload the document with all types
@@ -107,16 +126,16 @@ redis-cli -h "$HOST" --raw -x am.load doc < /tmp/saved.bin
 
 # Verify all values persisted correctly
 val=$(redis-cli -h "$HOST" --raw am.gettext doc greeting)
-test "$val" = "hello world"
+assert_equals "$val" "hello world"
 
 val=$(redis-cli -h "$HOST" am.getint doc age)
-test "$val" = "42"
+assert_equals "$val" "42"
 
 val=$(redis-cli -h "$HOST" am.getdouble doc pi)
-test "$val" = "3.14159"
+assert_equals "$val" "3.14159"
 
 val=$(redis-cli -h "$HOST" am.getbool doc active)
-test "$val" = "1"
+assert_equals "$val" "1"
 
 name=$(redis-cli -h "$HOST" --raw am.gettext doc name)
 count=$(redis-cli -h "$HOST" am.getint doc count)
@@ -124,19 +143,19 @@ score=$(redis-cli -h "$HOST" am.getdouble doc score)
 verified=$(redis-cli -h "$HOST" am.getbool doc verified)
 likes=$(redis-cli -h "$HOST" am.getcounter doc likes)
 
-test "$name" = "Alice"
-test "$count" = "100"
-test "$score" = "95.5"
-test "$verified" = "1"
-test "$likes" = "42"
+assert_equals "$name" "Alice"
+assert_equals "$count" "100"
+assert_equals "$score" "95.5"
+assert_equals "$verified" "1"
+assert_equals "$likes" "42"
 echo "   ✓ All types persist and reload correctly"
 
 # Test non-existent fields return null
 echo "8. Testing null returns for non-existent fields..."
 val=$(redis-cli -h "$HOST" am.gettext doc nonexistent)
-test "$val" = ""
+assert_equals "$val" ""
 val=$(redis-cli -h "$HOST" am.getint doc nonexistent)
-test "$val" = ""
+assert_equals "$val" ""
 echo "   ✓ Non-existent fields return null"
 
 # Test nested path operations
@@ -147,34 +166,34 @@ redis-cli -h "$HOST" am.new doc2
 # Test nested text paths
 redis-cli -h "$HOST" am.puttext doc2 user.profile.name "Bob"
 val=$(redis-cli -h "$HOST" --raw am.gettext doc2 user.profile.name)
-test "$val" = "Bob"
+assert_equals "$val" "Bob"
 echo "   ✓ Nested text paths work"
 
 # Test nested int paths
 redis-cli -h "$HOST" am.putint doc2 user.profile.age 25
 val=$(redis-cli -h "$HOST" am.getint doc2 user.profile.age)
-test "$val" = "25"
+assert_equals "$val" "25"
 echo "   ✓ Nested integer paths work"
 
 # Test nested double paths
 redis-cli -h "$HOST" am.putdouble doc2 metrics.cpu.usage 75.5
 val=$(redis-cli -h "$HOST" am.getdouble doc2 metrics.cpu.usage)
-test "$val" = "75.5"
+assert_equals "$val" "75.5"
 echo "   ✓ Nested double paths work"
 
 # Test nested bool paths
 redis-cli -h "$HOST" am.putbool doc2 flags.features.enabled true
 val=$(redis-cli -h "$HOST" am.getbool doc2 flags.features.enabled)
-test "$val" = "1"
+assert_equals "$val" "1"
 echo "   ✓ Nested boolean paths work"
 
 # Test nested counter paths
 redis-cli -h "$HOST" am.putcounter doc2 stats.pageviews 100
 val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
-test "$val" = "100"
+assert_equals "$val" "100"
 redis-cli -h "$HOST" am.inccounter doc2 stats.pageviews 50
 val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
-test "$val" = "150"
+assert_equals "$val" "150"
 echo "   ✓ Nested counter paths work"
 
 # Test JSONPath-style with $ prefix
@@ -183,10 +202,10 @@ redis-cli -h "$HOST" del doc3
 redis-cli -h "$HOST" am.new doc3
 redis-cli -h "$HOST" am.puttext doc3 '$.user.name' "Charlie"
 val=$(redis-cli -h "$HOST" --raw am.gettext doc3 '$.user.name')
-test "$val" = "Charlie"
+assert_equals "$val" "Charlie"
 # Verify the same path works without $
 val=$(redis-cli -h "$HOST" --raw am.gettext doc3 user.name)
-test "$val" = "Charlie"
+assert_equals "$val" "Charlie"
 echo "   ✓ JSONPath-style $ prefix works"
 
 # Test deeply nested paths
@@ -195,7 +214,7 @@ redis-cli -h "$HOST" del doc4
 redis-cli -h "$HOST" am.new doc4
 redis-cli -h "$HOST" am.puttext doc4 a.b.c.d.e.f.value "deeply nested"
 val=$(redis-cli -h "$HOST" --raw am.gettext doc4 a.b.c.d.e.f.value)
-test "$val" = "deeply nested"
+assert_equals "$val" "deeply nested"
 echo "   ✓ Deeply nested paths work"
 
 # Test persistence of nested paths
@@ -206,15 +225,15 @@ redis-cli -h "$HOST" del doc2
 redis-cli -h "$HOST" --raw -x am.load doc2 < /tmp/nested-saved.bin
 
 val=$(redis-cli -h "$HOST" --raw am.gettext doc2 user.profile.name)
-test "$val" = "Bob"
+assert_equals "$val" "Bob"
 val=$(redis-cli -h "$HOST" am.getint doc2 user.profile.age)
-test "$val" = "25"
+assert_equals "$val" "25"
 val=$(redis-cli -h "$HOST" am.getdouble doc2 metrics.cpu.usage)
-test "$val" = "75.5"
+assert_equals "$val" "75.5"
 val=$(redis-cli -h "$HOST" am.getbool doc2 flags.features.enabled)
-test "$val" = "1"
+assert_equals "$val" "1"
 val=$(redis-cli -h "$HOST" am.getcounter doc2 stats.pageviews)
-test "$val" = "150"
+assert_equals "$val" "150"
 echo "   ✓ Nested paths persist and reload correctly"
 
 # Test mixing flat and nested keys
@@ -225,8 +244,8 @@ redis-cli -h "$HOST" am.puttext doc5 simple "flat value"
 redis-cli -h "$HOST" am.puttext doc5 nested.key "nested value"
 val1=$(redis-cli -h "$HOST" --raw am.gettext doc5 simple)
 val2=$(redis-cli -h "$HOST" --raw am.gettext doc5 nested.key)
-test "$val1" = "flat value"
-test "$val2" = "nested value"
+assert_equals "$val1" "flat value"
+assert_equals "$val2" "nested value"
 echo "   ✓ Mixed flat and nested keys work"
 
 # Test array/list operations
@@ -237,15 +256,15 @@ redis-cli -h "$HOST" am.createlist doc6 users
 redis-cli -h "$HOST" am.appendtext doc6 users "Alice"
 redis-cli -h "$HOST" am.appendtext doc6 users "Bob"
 len=$(redis-cli -h "$HOST" am.listlen doc6 users)
-test "$len" = "2"
+assert_equals "$len" "2"
 echo "   ✓ List creation and append works"
 
 # Test array index access
 echo "15. Testing array index access..."
 val1=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[0]')
 val2=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[1]')
-test "$val1" = "Alice"
-test "$val2" = "Bob"
+assert_equals "$val1" "Alice"
+assert_equals "$val2" "Bob"
 echo "   ✓ Array index access works"
 
 # Test different types in lists
@@ -255,8 +274,8 @@ redis-cli -h "$HOST" am.appendint doc6 ages 25
 redis-cli -h "$HOST" am.appendint doc6 ages 30
 age1=$(redis-cli -h "$HOST" am.getint doc6 'ages[0]')
 age2=$(redis-cli -h "$HOST" am.getint doc6 'ages[1]')
-test "$age1" = "25"
-test "$age2" = "30"
+assert_equals "$age1" "25"
+assert_equals "$age2" "30"
 echo "   ✓ Different types in lists work"
 
 # Test nested list paths
@@ -268,8 +287,8 @@ redis-cli -h "$HOST" am.appendtext doc7 data.items "item1"
 redis-cli -h "$HOST" am.appendtext doc7 data.items "item2"
 item1=$(redis-cli -h "$HOST" --raw am.gettext doc7 'data.items[0]')
 item2=$(redis-cli -h "$HOST" --raw am.gettext doc7 'data.items[1]')
-test "$item1" = "item1"
-test "$item2" = "item2"
+assert_equals "$item1" "item1"
+assert_equals "$item2" "item2"
 echo "   ✓ Nested list paths work"
 
 # Test list persistence
@@ -281,9 +300,9 @@ redis-cli -h "$HOST" --raw -x am.load doc6 < /tmp/list-saved.bin
 len=$(redis-cli -h "$HOST" am.listlen doc6 users)
 val1=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[0]')
 val2=$(redis-cli -h "$HOST" --raw am.gettext doc6 'users[1]')
-test "$len" = "2"
-test "$val1" = "Alice"
-test "$val2" = "Bob"
+assert_equals "$len" "2"
+assert_equals "$val1" "Alice"
+assert_equals "$val2" "Bob"
 echo "   ✓ List persistence works"
 
 # Test keyspace notifications for all write operations
@@ -418,7 +437,7 @@ redis-cli -h "$HOST" del diff_test1
 redis-cli -h "$HOST" am.new diff_test1
 redis-cli -h "$HOST" am.puttext diff_test1 content "Hello World"
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 
 # Apply a diff that changes "World" to "Rust"
 redis-cli -h "$HOST" am.putdiff diff_test1 content "--- a/content
@@ -428,7 +447,7 @@ redis-cli -h "$HOST" am.putdiff diff_test1 content "--- a/content
 +Hello Rust
 "
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test1 content)
-test "$val" = "Hello Rust"
+assert_equals "$val" "Hello Rust"
 echo "   ✓ AM.PUTDIFF simple replacement works"
 
 echo "33. Testing AM.PUTDIFF with line insertion..."
@@ -440,7 +459,7 @@ printf "Line 1\nLine 3\n" | redis-cli -h "$HOST" -x am.puttext diff_test2 doc > 
 printf -- "--- a/doc\n+++ b/doc\n@@ -1,2 +1,3 @@\n Line 1\n+Line 2\n Line 3\n" | redis-cli -h "$HOST" -x am.putdiff diff_test2 doc > /dev/null
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test2 doc)
 expected=$(printf "Line 1\nLine 2\nLine 3\n")
-test "$val" = "$expected"
+assert_equals "$val" "$expected"
 echo "   ✓ AM.PUTDIFF line insertion works"
 
 echo "34. Testing AM.PUTDIFF with line deletion..."
@@ -452,7 +471,7 @@ printf "Line 1\nLine 2\nLine 3\n" | redis-cli -h "$HOST" -x am.puttext diff_test
 printf -- "--- a/doc\n+++ b/doc\n@@ -1,3 +1,2 @@\n Line 1\n-Line 2\n Line 3\n" | redis-cli -h "$HOST" -x am.putdiff diff_test3 doc > /dev/null
 val=$(redis-cli -h "$HOST" --raw am.gettext diff_test3 doc)
 expected=$(printf "Line 1\nLine 3\n")
-test "$val" = "$expected"
+assert_equals "$val" "$expected"
 echo "   ✓ AM.PUTDIFF line deletion works"
 
 echo "35. Testing AM.PUTDIFF notification..."
@@ -473,12 +492,12 @@ redis-cli -h "$HOST" del splice_test1
 redis-cli -h "$HOST" am.new splice_test1
 redis-cli -h "$HOST" am.puttext splice_test1 greeting "Hello World"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test1 greeting)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 
 # Replace "World" with "Rust" - delete 5 chars at position 6, insert "Rust"
 redis-cli -h "$HOST" am.splicetext splice_test1 greeting 6 5 "Rust"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test1 greeting)
-test "$val" = "Hello Rust"
+assert_equals "$val" "Hello Rust"
 echo "   ✓ AM.SPLICETEXT simple replacement works"
 
 echo "48. Testing AM.SPLICETEXT with insertion..."
@@ -486,12 +505,12 @@ redis-cli -h "$HOST" del splice_test2
 redis-cli -h "$HOST" am.new splice_test2
 redis-cli -h "$HOST" am.puttext splice_test2 text "HelloWorld"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test2 text)
-test "$val" = "HelloWorld"
+assert_equals "$val" "HelloWorld"
 
 # Insert a space at position 5 - delete 0, insert " "
 redis-cli -h "$HOST" am.splicetext splice_test2 text 5 0 " "
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test2 text)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 echo "   ✓ AM.SPLICETEXT insertion works"
 
 echo "49. Testing AM.SPLICETEXT with deletion..."
@@ -499,12 +518,12 @@ redis-cli -h "$HOST" del splice_test3
 redis-cli -h "$HOST" am.new splice_test3
 redis-cli -h "$HOST" am.puttext splice_test3 text "Hello  World"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test3 text)
-test "$val" = "Hello  World"
+assert_equals "$val" "Hello  World"
 
 # Delete extra space at position 5 - delete 1, insert nothing
 redis-cli -h "$HOST" am.splicetext splice_test3 text 5 1 ""
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test3 text)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 echo "   ✓ AM.SPLICETEXT deletion works"
 
 echo "50. Testing AM.SPLICETEXT at beginning..."
@@ -515,7 +534,7 @@ redis-cli -h "$HOST" am.puttext splice_test4 text "World"
 # Insert at beginning
 redis-cli -h "$HOST" am.splicetext splice_test4 text 0 0 "Hello "
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test4 text)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 echo "   ✓ AM.SPLICETEXT at beginning works"
 
 echo "51. Testing AM.SPLICETEXT at end..."
@@ -526,7 +545,7 @@ redis-cli -h "$HOST" am.puttext splice_test5 text "Hello"
 # Insert at end
 redis-cli -h "$HOST" am.splicetext splice_test5 text 5 0 " World"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test5 text)
-test "$val" = "Hello World"
+assert_equals "$val" "Hello World"
 echo "   ✓ AM.SPLICETEXT at end works"
 
 echo "52. Testing AM.SPLICETEXT with nested path..."
@@ -537,7 +556,7 @@ redis-cli -h "$HOST" am.puttext splice_test6 user.greeting "Hello World"
 # Splice nested path
 redis-cli -h "$HOST" am.splicetext splice_test6 user.greeting 6 5 "Rust"
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test6 user.greeting)
-test "$val" = "Hello Rust"
+assert_equals "$val" "Hello Rust"
 echo "   ✓ AM.SPLICETEXT with nested paths works"
 
 echo "53. Testing AM.SPLICETEXT persistence..."
@@ -553,7 +572,7 @@ redis-cli -h "$HOST" del splice_test7
 redis-cli -h "$HOST" --raw -x am.load splice_test7 < /tmp/splice-saved.bin
 
 val=$(redis-cli -h "$HOST" --raw am.gettext splice_test7 doc)
-test "$val" = "Hello Rust"
+assert_equals "$val" "Hello Rust"
 echo "   ✓ AM.SPLICETEXT persistence works"
 
 echo "54. Testing AM.SPLICETEXT notification..."
@@ -992,7 +1011,7 @@ redis-cli -h "$HOST" del changes_test1 > /dev/null
 redis-cli -h "$HOST" am.new changes_test1 > /dev/null
 # Get all changes from empty document (should return empty array)
 changes=$(redis-cli -h "$HOST" am.changes changes_test1)
-test "$changes" = ""
+assert_equals "$changes" ""
 echo "   ✓ AM.CHANGES returns empty array for new document"
 
 echo "57. Testing AM.CHANGES with single change..."
@@ -1000,8 +1019,8 @@ redis-cli -h "$HOST" del changes_test2 > /dev/null
 redis-cli -h "$HOST" am.new changes_test2 > /dev/null
 redis-cli -h "$HOST" am.puttext changes_test2 name "Alice" > /dev/null
 # Get all changes (should return 1 change)
-num_changes=$(redis-cli -h "$HOST" am.changes changes_test2 | wc -l)
-test "$num_changes" = "1"
+num_changes=$(redis-cli -h "$HOST" am.numchanges changes_test2)
+assert_equals "$num_changes" "1"
 echo "   ✓ AM.CHANGES returns single change after one operation"
 
 echo "58. Testing AM.CHANGES with multiple changes..."
@@ -1011,8 +1030,8 @@ redis-cli -h "$HOST" am.puttext changes_test3 name "Bob" > /dev/null
 redis-cli -h "$HOST" am.putint changes_test3 age 25 > /dev/null
 redis-cli -h "$HOST" am.putbool changes_test3 active true > /dev/null
 # Get all changes (should return 3 changes)
-num_changes=$(redis-cli -h "$HOST" am.changes changes_test3 | wc -l)
-test "$num_changes" = "3"
+num_changes=$(redis-cli -h "$HOST" am.numchanges changes_test3)
+assert_equals "$num_changes" "3"
 echo "   ✓ AM.CHANGES returns all changes after multiple operations"
 
 echo "59. Testing AM.CHANGES returns binary data..."
@@ -1034,15 +1053,15 @@ redis-cli -h "$HOST" am.new changes_test5 > /dev/null
 redis-cli -h "$HOST" am.puttext changes_test5 data "initial" > /dev/null
 redis-cli -h "$HOST" am.puttext changes_test5 data "updated" > /dev/null
 # Get changes count before save
-changes_before=$(redis-cli -h "$HOST" am.changes changes_test5 | wc -l)
+changes_before=$(redis-cli -h "$HOST" am.numchanges changes_test5)
 # Save and reload
 redis-cli -h "$HOST" --raw am.save changes_test5 > /tmp/changes_test5.bin
 truncate -s -1 /tmp/changes_test5.bin
 redis-cli -h "$HOST" del changes_test5
 redis-cli -h "$HOST" --raw -x am.load changes_test5 < /tmp/changes_test5.bin
 # Get changes count after reload
-changes_after=$(redis-cli -h "$HOST" am.changes changes_test5 | wc -l)
-test "$changes_before" = "$changes_after"
+changes_after=$(redis-cli -h "$HOST" am.numchanges changes_test5)
+assert_equals "$changes_before" "$changes_after"
 echo "   ✓ AM.CHANGES works after save/load (both returned $changes_before changes)"
 rm -f /tmp/changes_test5.bin
 
@@ -1074,8 +1093,8 @@ redis-cli -h "$HOST" am.createlist changes_test6 items > /dev/null
 redis-cli -h "$HOST" am.appendtext changes_test6 items "first" > /dev/null
 redis-cli -h "$HOST" am.appendtext changes_test6 items "second" > /dev/null
 # Get all changes (should return 3: createlist + 2 appends)
-num_changes=$(redis-cli -h "$HOST" am.changes changes_test6 | wc -l)
-test "$num_changes" = "3"
+num_changes=$(redis-cli -h "$HOST" am.numchanges changes_test6)
+assert_equals "$num_changes" "3"
 echo "   ✓ AM.CHANGES tracks list operations correctly"
 
 echo "63. Testing AM.CHANGES with nested paths..."
@@ -1085,8 +1104,8 @@ redis-cli -h "$HOST" am.puttext changes_test7 user.name "Carol" > /dev/null
 redis-cli -h "$HOST" am.putint changes_test7 user.age 30 > /dev/null
 redis-cli -h "$HOST" am.puttext changes_test7 user.profile.bio "Developer" > /dev/null
 # Get all changes (should return 3)
-num_changes=$(redis-cli -h "$HOST" am.changes changes_test7 | wc -l)
-test "$num_changes" = "3"
+num_changes=$(redis-cli -h "$HOST" am.numchanges changes_test7)
+assert_equals "$num_changes" "3"
 echo "   ✓ AM.CHANGES tracks nested path operations correctly"
 
 echo "64. Testing AM.CHANGES with AM.SPLICETEXT..."
@@ -1127,7 +1146,7 @@ echo "66. Testing AM.TOJSON with empty document..."
 redis-cli -h "$HOST" del json_test1 > /dev/null
 redis-cli -h "$HOST" am.new json_test1 > /dev/null
 json=$(redis-cli -h "$HOST" --raw am.tojson json_test1)
-test "$json" = "{}"
+assert_equals "$json" "{}"
 echo "   ✓ AM.TOJSON returns {} for empty document"
 
 echo "67. Testing AM.TOJSON with simple types..."
@@ -1143,10 +1162,10 @@ name=$(echo "$json" | jq -r '.name')
 age=$(echo "$json" | jq -r '.age')
 score=$(echo "$json" | jq -r '.score')
 active=$(echo "$json" | jq -r '.active')
-test "$name" = "Alice"
-test "$age" = "30"
-test "$score" = "95.5"
-test "$active" = "true"
+assert_equals "$name" "Alice"
+assert_equals "$age" "30"
+assert_equals "$score" "95.5"
+assert_equals "$active" "true"
 echo "   ✓ AM.TOJSON returns correct JSON for simple types"
 
 echo "68. Testing AM.TOJSON with nested objects..."
@@ -1160,9 +1179,9 @@ json=$(redis-cli -h "$HOST" --raw am.tojson json_test3)
 profile_name=$(echo "$json" | jq -r '.user.profile.name')
 profile_age=$(echo "$json" | jq -r '.user.profile.age')
 email=$(echo "$json" | jq -r '.user.email')
-test "$profile_name" = "Bob"
-test "$profile_age" = "25"
-test "$email" = "bob@example.com"
+assert_equals "$profile_name" "Bob"
+assert_equals "$profile_age" "25"
+assert_equals "$email" "bob@example.com"
 echo "   ✓ AM.TOJSON returns correct JSON for nested objects"
 
 echo "69. Testing AM.TOJSON with lists..."
@@ -1178,10 +1197,10 @@ tag0=$(echo "$json" | jq -r '.tags[0]')
 tag1=$(echo "$json" | jq -r '.tags[1]')
 tag2=$(echo "$json" | jq -r '.tags[2]')
 tag_count=$(echo "$json" | jq -r '.tags | length')
-test "$tag0" = "redis"
-test "$tag1" = "crdt"
-test "$tag2" = "rust"
-test "$tag_count" = "3"
+assert_equals "$tag0" "redis"
+assert_equals "$tag1" "crdt"
+assert_equals "$tag2" "rust"
+assert_equals "$tag_count" "3"
 echo "   ✓ AM.TOJSON returns correct JSON for lists"
 
 echo "70. Testing AM.TOJSON with mixed list types..."
@@ -1198,10 +1217,10 @@ item0=$(echo "$json" | jq -r '.mixed[0]')
 item1=$(echo "$json" | jq -r '.mixed[1]')
 item2=$(echo "$json" | jq -r '.mixed[2]')
 item3=$(echo "$json" | jq -r '.mixed[3]')
-test "$item0" = "text"
-test "$item1" = "42"
-test "$item2" = "3.14"
-test "$item3" = "true"
+assert_equals "$item0" "text"
+assert_equals "$item1" "42"
+assert_equals "$item2" "3.14"
+assert_equals "$item3" "true"
 echo "   ✓ AM.TOJSON returns correct JSON for mixed list types"
 
 echo "71. Testing AM.TOJSON with pretty formatting..."
@@ -1216,8 +1235,8 @@ pretty=$(redis-cli -h "$HOST" --raw am.tojson json_test6 true)
 # Verify both are valid JSON with same content
 compact_name=$(echo "$compact" | jq -r '.name')
 pretty_name=$(echo "$pretty" | jq -r '.name')
-test "$compact_name" = "Alice"
-test "$pretty_name" = "Alice"
+assert_equals "$compact_name" "Alice"
+assert_equals "$pretty_name" "Alice"
 # Count actual newlines in both
 compact_lines=$(echo "$compact" | wc -l)
 pretty_lines=$(echo "$pretty" | wc -l)
@@ -1250,13 +1269,30 @@ hobby0=$(echo "$json" | jq -r '.user.hobbies[0]')
 hobby1=$(echo "$json" | jq -r '.user.hobbies[1]')
 db_host=$(echo "$json" | jq -r '.config.database.host')
 db_port=$(echo "$json" | jq -r '.config.database.port')
-test "$user_name" = "Alice"
-test "$user_age" = "30"
-test "$hobby0" = "reading"
-test "$hobby1" = "coding"
-test "$db_host" = "localhost"
-test "$db_port" = "5432"
+assert_equals "$user_name" "Alice"
+assert_equals "$user_age" "30"
+assert_equals "$hobby0" "reading"
+assert_equals "$hobby1" "coding"
+assert_equals "$db_host" "localhost"
+assert_equals "$db_port" "5432"
 echo "   ✓ AM.TOJSON returns correct JSON for complex structure"
+
+echo "72a. Testing AM.TOJSON with timestamps as ISO 8601..."
+redis-cli -h "$HOST" del json_test_ts > /dev/null
+redis-cli -h "$HOST" am.new json_test_ts > /dev/null
+# 1704067200000 = 2024-01-01 00:00:00 UTC
+redis-cli -h "$HOST" am.puttimestamp json_test_ts created_at 1704067200000 > /dev/null
+redis-cli -h "$HOST" am.puttext json_test_ts name "Event" > /dev/null
+json=$(redis-cli -h "$HOST" --raw am.tojson json_test_ts)
+# Verify timestamp is ISO 8601 string, not a number
+timestamp=$(echo "$json" | jq -r '.created_at')
+# Check that it starts with 2024-01-01T00:00:00 (ISO 8601 format)
+if [[ "$timestamp" == 2024-01-01T00:00:00* ]]; then
+    echo "   ✓ AM.TOJSON returns ISO 8601 string for timestamps: $timestamp"
+else
+    echo "   ✗ AM.TOJSON did not return ISO 8601 timestamp, got: $timestamp"
+    exit 1
+fi
 
 echo "73. Testing AM.TOJSON persistence roundtrip..."
 redis-cli -h "$HOST" del json_test8 > /dev/null
@@ -1284,10 +1320,10 @@ name_after=$(echo "$json_after" | jq -r '.name')
 count_after=$(echo "$json_after" | jq -r '.count')
 item0_after=$(echo "$json_after" | jq -r '.items[0]')
 item1_after=$(echo "$json_after" | jq -r '.items[1]')
-test "$name_before" = "$name_after"
-test "$count_before" = "$count_after"
-test "$item0_before" = "$item0_after"
-test "$item1_before" = "$item1_after"
+assert_equals "$name_before" "$name_after"
+assert_equals "$count_before" "$count_after"
+assert_equals "$item0_before" "$item0_after"
+assert_equals "$item1_before" "$item1_after"
 echo "   ✓ AM.TOJSON works correctly after save/load"
 rm -f /tmp/json_test8.bin
 
@@ -1301,10 +1337,10 @@ name=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test1 name)
 age=$(redis-cli -h "$HOST" am.getint fromjson_test1 age)
 score=$(redis-cli -h "$HOST" am.getdouble fromjson_test1 score)
 active=$(redis-cli -h "$HOST" am.getbool fromjson_test1 active)
-test "$name" = "Alice"
-test "$age" = "30"
-test "$score" = "95.5"
-test "$active" = "1"
+assert_equals "$name" "Alice"
+assert_equals "$age" "30"
+assert_equals "$score" "95.5"
+assert_equals "$active" "1"
 echo "   ✓ AM.FROMJSON simple types work"
 
 echo "75. Testing AM.FROMJSON with nested objects..."
@@ -1315,9 +1351,9 @@ echo "$json" | redis-cli -h "$HOST" -x am.fromjson fromjson_test2
 profile_name=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test2 user.profile.name)
 profile_age=$(redis-cli -h "$HOST" am.getint fromjson_test2 user.profile.age)
 email=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test2 user.email)
-test "$profile_name" = "Bob"
-test "$profile_age" = "25"
-test "$email" = "bob@example.com"
+assert_equals "$profile_name" "Bob"
+assert_equals "$profile_age" "25"
+assert_equals "$email" "bob@example.com"
 echo "   ✓ AM.FROMJSON nested objects work"
 
 echo "76. Testing AM.FROMJSON with arrays..."
@@ -1329,10 +1365,10 @@ list_len=$(redis-cli -h "$HOST" am.listlen fromjson_test3 tags)
 tag0=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test3 'tags[0]')
 tag1=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test3 'tags[1]')
 tag2=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test3 'tags[2]')
-test "$list_len" = "3"
-test "$tag0" = "redis"
-test "$tag1" = "crdt"
-test "$tag2" = "rust"
+assert_equals "$list_len" "3"
+assert_equals "$tag0" "redis"
+assert_equals "$tag1" "crdt"
+assert_equals "$tag2" "rust"
 echo "   ✓ AM.FROMJSON arrays work"
 
 echo "77. Testing AM.FROMJSON with mixed list types..."
@@ -1344,10 +1380,10 @@ item0=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test4 'mixed[0]')
 item1=$(redis-cli -h "$HOST" am.getint fromjson_test4 'mixed[1]')
 item2=$(redis-cli -h "$HOST" am.getdouble fromjson_test4 'mixed[2]')
 item3=$(redis-cli -h "$HOST" am.getbool fromjson_test4 'mixed[3]')
-test "$item0" = "text"
-test "$item1" = "42"
-test "$item2" = "3.14"
-test "$item3" = "1"
+assert_equals "$item0" "text"
+assert_equals "$item1" "42"
+assert_equals "$item2" "3.14"
+assert_equals "$item3" "1"
 echo "   ✓ AM.FROMJSON mixed list types work"
 
 echo "78. Testing AM.FROMJSON with complex structure..."
@@ -1361,12 +1397,12 @@ hobby0=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test5 'user.hobbies[0]')
 hobby1=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test5 'user.hobbies[1]')
 db_host=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test5 config.database.host)
 db_port=$(redis-cli -h "$HOST" am.getint fromjson_test5 config.database.port)
-test "$user_name" = "Alice"
-test "$user_age" = "30"
-test "$hobby0" = "reading"
-test "$hobby1" = "coding"
-test "$db_host" = "localhost"
-test "$db_port" = "5432"
+assert_equals "$user_name" "Alice"
+assert_equals "$user_age" "30"
+assert_equals "$hobby0" "reading"
+assert_equals "$hobby1" "coding"
+assert_equals "$db_host" "localhost"
+assert_equals "$db_port" "5432"
 echo "   ✓ AM.FROMJSON complex structure works"
 
 echo "79. Testing AM.FROMJSON to AM.TOJSON roundtrip..."
@@ -1382,9 +1418,9 @@ tag0_original=$(echo "$original_json" | jq -r '.tags[0]')
 name_exported=$(echo "$exported_json" | jq -r '.name')
 age_exported=$(echo "$exported_json" | jq -r '.age')
 tag0_exported=$(echo "$exported_json" | jq -r '.tags[0]')
-test "$name_original" = "$name_exported"
-test "$age_original" = "$age_exported"
-test "$tag0_original" = "$tag0_exported"
+assert_equals "$name_original" "$name_exported"
+assert_equals "$age_original" "$age_exported"
+assert_equals "$tag0_original" "$tag0_exported"
 echo "   ✓ AM.FROMJSON to AM.TOJSON roundtrip works"
 
 echo "80. Testing AM.FROMJSON persistence..."
@@ -1400,9 +1436,9 @@ redis-cli -h "$HOST" --raw -x am.load fromjson_test7 < /tmp/fromjson_test7.bin
 title=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test7 title)
 count=$(redis-cli -h "$HOST" am.getint fromjson_test7 count)
 item0=$(redis-cli -h "$HOST" --raw am.gettext fromjson_test7 'items[0]')
-test "$title" = "Document"
-test "$count" = "100"
-test "$item0" = "a"
+assert_equals "$title" "Document"
+assert_equals "$count" "100"
+assert_equals "$item0" "a"
 echo "   ✓ AM.FROMJSON persistence works"
 rm -f /tmp/fromjson_test7.bin
 
@@ -1412,7 +1448,7 @@ json='{}'
 echo "$json" | redis-cli -h "$HOST" -x am.fromjson fromjson_test8
 # Should create empty document
 exported=$(redis-cli -h "$HOST" --raw am.tojson fromjson_test8)
-test "$exported" = "{}"
+assert_equals "$exported" "{}"
 echo "   ✓ AM.FROMJSON empty object works"
 
 echo "82. Testing AM.FROMJSON notification..."
@@ -1427,7 +1463,7 @@ redis-cli -h "$HOST" am.new ts_test1
 # Unix timestamp for 2024-01-01T00:00:00Z in milliseconds
 redis-cli -h "$HOST" am.puttimestamp ts_test1 created_at 1704067200000
 val=$(redis-cli -h "$HOST" am.gettimestamp ts_test1 created_at)
-test "$val" = "1704067200000"
+assert_equals "$val" "1704067200000"
 echo "   ✓ Timestamp get/set works"
 
 echo "84. Testing timestamp persistence..."
@@ -1436,7 +1472,7 @@ truncate -s -1 /tmp/ts-saved.bin
 redis-cli -h "$HOST" del ts_test1
 redis-cli -h "$HOST" --raw -x am.load ts_test1 < /tmp/ts-saved.bin
 val=$(redis-cli -h "$HOST" am.gettimestamp ts_test1 created_at)
-test "$val" = "1704067200000"
+assert_equals "$val" "1704067200000"
 echo "   ✓ Timestamp persistence works"
 
 echo "85. Testing timestamp in nested paths..."
@@ -1444,7 +1480,7 @@ redis-cli -h "$HOST" del ts_test2
 redis-cli -h "$HOST" am.new ts_test2
 redis-cli -h "$HOST" am.puttimestamp ts_test2 event.created_at 1704067200000
 val=$(redis-cli -h "$HOST" am.gettimestamp ts_test2 event.created_at)
-test "$val" = "1704067200000"
+assert_equals "$val" "1704067200000"
 echo "   ✓ Nested timestamp paths work"
 
 echo "86. Testing timestamp JSON export..."
@@ -1499,22 +1535,8 @@ redis-cli -h "$HOST" am.puttext ts_test4 name "Alice"
 redis-cli -h "$HOST" am.putint ts_test4 age 30
 redis-cli -h "$HOST" am.puttimestamp ts_test4 joined_at 1704067200000
 val=$(redis-cli -h "$HOST" am.gettimestamp ts_test4 joined_at)
-test "$val" = "1704067200000"
+assert_equals "$val" "1704067200000"
 echo "   ✓ Timestamps work alongside other types"
-
-# Helper function for assertions
-assert_equals() {
-    local expected=$1
-    local actual=$2
-    local message=$3
-
-    if [ "$expected" != "$actual" ]; then
-        echo "   ✗ $message"
-        echo "      Expected: $expected"
-        echo "      Actual: $actual"
-        exit 1
-    fi
-}
 
 # Test: Create room with specific key
 test_create_room() {
@@ -1629,7 +1651,7 @@ redis-cli -h "$HOST" am.putint persist_test1 count 99 > /dev/null
 
 # Verify data before restart
 val=$(redis-cli -h "$HOST" --raw am.gettext persist_test1 message)
-test "$val" = "Persisted data"
+assert_equals "$val" "Persisted data"
 
 # Try to restart if in Docker environment
 if restart_redis; then
