@@ -13,6 +13,7 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 - **Nested data structures** - maps and arrays with dot notation and array indices
 - **Type-safe operations** - text, integers, doubles, booleans, and counters
 - **CRDT counters** - distributed counters with proper conflict-free increment operations
+- **Rich text marks** - annotate text ranges with formatting, links, comments, and custom metadata
 - **Real-time synchronization** - pub/sub change notifications for live updates
 - **Efficient text editing** - splice operations and unified diff support
 - **Change history** - retrieve document changes for synchronization
@@ -359,6 +360,67 @@ AM.GETCOUNTER doc1 views
 # Returns: 8
 ```
 
+### Text Marks Operations
+
+Marks provide rich text metadata for text content, allowing you to annotate ranges of text with attributes like formatting, links, comments, or any custom metadata. Marks are ideal for building collaborative rich text editors.
+
+#### `AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]`
+Create a mark on a text range. Marks annotate character ranges with metadata.
+
+```redis
+# Create a bold mark on characters 0-5
+AM.MARKCREATE mydoc content bold true 0 5
+
+# Create a link mark with URL
+AM.MARKCREATE mydoc content link "https://example.com" 10 20
+
+# Create a comment mark
+AM.MARKCREATE mydoc content comment "Fix this typo" 15 19
+```
+
+Parameters:
+- `name` - Mark identifier (e.g., "bold", "link", "comment")
+- `value` - Mark value (string, integer, double, or boolean)
+- `start` - Start position (0-indexed, inclusive)
+- `end` - End position (0-indexed, exclusive)
+- `expand` - (optional) How mark expands with edits: "none", "before", "after", "both" (default: "none")
+
+**Expand behavior:**
+- `none` - Mark doesn't expand when text is inserted at boundaries
+- `before` - Mark expands when text is inserted before the start
+- `after` - Mark expands when text is inserted after the end
+- `both` - Mark expands when text is inserted at either boundary
+
+**Automatic Text object conversion:**
+If the path contains a simple string scalar, it will be automatically converted to a Text object before applying marks. This allows you to use `AM.PUTTEXT` for initial content, then add marks without manual conversion.
+
+#### `AM.MARKS <key> <path>`
+Retrieve all marks on a text field. Returns an array of marks with their names, values, and ranges.
+
+```redis
+AM.MARKS mydoc content
+# Returns array: ["bold", true, 0, 5, "link", "https://example.com", 10, 20, ...]
+```
+
+Each mark is represented as 4 consecutive values:
+1. Mark name (string)
+2. Mark value (string/int/double/bool)
+3. Start position (integer)
+4. End position (integer)
+
+#### `AM.MARKCLEAR <key> <path> <name> <start> <end> [expand]`
+Remove a mark from a text range.
+
+```redis
+# Remove bold mark from characters 0-5
+AM.MARKCLEAR mydoc content bold 0 5
+
+# Remove link mark from characters 10-20 with expand behavior
+AM.MARKCLEAR mydoc content link 10 20 both
+```
+
+Parameters match `AM.MARKCREATE` except no value is needed since we're removing the mark.
+
 ### List Operations
 
 #### `AM.CREATELIST <key> <path>`
@@ -652,6 +714,114 @@ AM.TOJSON api:response true
 #   "total": 2,
 #   "page": 1
 # }
+```
+
+### Rich Text Editor with Marks
+
+```redis
+# Create a document for collaborative rich text editing
+AM.NEW doc:article
+
+# Add initial content
+AM.PUTTEXT doc:article content "Welcome to our collaborative editor!"
+
+# Apply formatting marks
+# Make "Welcome" bold (characters 0-7)
+AM.MARKCREATE doc:article content bold true 0 7
+
+# Make "collaborative" italic (characters 15-28)
+AM.MARKCREATE doc:article content italic true 15 28
+
+# Add a link to "editor" (characters 29-35)
+AM.MARKCREATE doc:article content link "https://example.com/editor" 29 35
+
+# Add a comment mark for review
+AM.MARKCREATE doc:article content comment "Great intro!" 0 35
+
+# Retrieve all marks to render in UI
+AM.MARKS doc:article content
+# Returns: ["bold", true, 0, 7, "italic", true, 15, 28, "link", "https://example.com/editor", 29, 35, "comment", "Great intro!", 0, 35]
+
+# User edits text using splice
+AM.SPLICETEXT doc:article content 15 13 "amazing"
+# Text is now: "Welcome to our amazing editor!"
+# Marks automatically adjust to the new text positions
+
+# Remove the comment after review
+AM.MARKCLEAR doc:article content comment 0 35
+
+# Get updated marks
+AM.MARKS doc:article content
+# Returns: ["bold", true, 0, 7, "link", "https://example.com/editor", 23, 29]
+# Note: positions adjusted after the splice operation
+
+# Multiple users can add marks simultaneously
+# User A adds highlight
+AM.MARKCREATE doc:article content highlight "yellow" 8 11
+
+# User B adds font size (with expand behavior)
+AM.MARKCREATE doc:article content fontSize 16 0 7 both
+
+# All marks merge automatically with CRDT conflict resolution
+AM.MARKS doc:article content
+# Returns all marks with proper conflict-free merging
+```
+
+### Marks with Expand Behavior
+
+```redis
+# Create document with expandable marks
+AM.NEW doc:notes
+AM.PUTTEXT doc:notes text "Hello World"
+
+# Create a bold mark that expands on both sides
+AM.MARKCREATE doc:notes text bold true 0 5 both
+
+# Insert text at the beginning (position 0)
+AM.SPLICETEXT doc:notes text 0 0 "**"
+# Mark expands: now covers "**Hello" (0-7)
+
+# Insert text at the end of the mark
+AM.SPLICETEXT doc:notes text 7 0 "**"
+# Mark expands: now covers "**Hello**" (0-9)
+
+# Get marks to verify expansion
+AM.MARKS doc:notes text
+# Returns: ["bold", true, 0, 9]
+
+# Create a mark that doesn't expand
+AM.MARKCREATE doc:notes text code true 10 15 none
+
+# Insert at boundaries - mark doesn't expand
+AM.SPLICETEXT doc:notes text 10 0 "["
+AM.SPLICETEXT doc:notes text 16 0 "]"
+
+# Code mark stays at original range (now 11-16 after insertions)
+AM.MARKS doc:notes text
+# Returns: ["bold", true, 0, 9, "code", true, 11, 16]
+```
+
+### Collaborative Annotations
+
+```redis
+# Create a shared document for team collaboration
+AM.NEW doc:proposal
+AM.PUTTEXT doc:proposal content "We propose to implement the new feature by Q2 2024."
+
+# Team member adds suggestion
+AM.MARKCREATE doc:proposal content suggestion "Consider Q1 instead?" 43 50
+
+# Another member adds approval mark
+AM.MARKCREATE doc:proposal content approved true 0 50
+
+# Project manager highlights key section
+AM.MARKCREATE doc:proposal content priority "high" 15 39
+
+# Export to JSON for external tools
+AM.TOJSON doc:proposal true
+
+# All marks are preserved and can be synced across clients
+# via Redis pub/sub (changes:doc:proposal channel)
 ```
 
 ## Testing

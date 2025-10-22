@@ -314,6 +314,170 @@ fn am_splicetext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
+fn am_markcreate(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]
+    if args.len() < 7 || args.len() > 8 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let mark_name = parse_utf8_field(&args[3], "name")?;
+    let value_str = parse_utf8_value(&args[4])?;
+    let start: usize = args[5]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("start must be a non-negative integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("start must be a non-negative integer"))?;
+    let end: usize = args[6]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("end must be a non-negative integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("end must be a non-negative integer"))?;
+
+    // Parse expand parameter (default to None)
+    let expand = if args.len() == 8 {
+        let expand_str = parse_utf8_value(&args[7])?;
+        match expand_str.to_lowercase().as_str() {
+            "before" => automerge::marks::ExpandMark::Before,
+            "after" => automerge::marks::ExpandMark::After,
+            "both" => automerge::marks::ExpandMark::Both,
+            "none" => automerge::marks::ExpandMark::None,
+            _ => return Err(RedisError::Str("expand must be 'before', 'after', 'both', or 'none'")),
+        }
+    } else {
+        automerge::marks::ExpandMark::None
+    };
+
+    // Parse the value - try to detect type
+    use automerge::ScalarValue;
+    let value = if value_str == "true" {
+        ScalarValue::Boolean(true)
+    } else if value_str == "false" {
+        ScalarValue::Boolean(false)
+    } else if let Ok(i) = value_str.parse::<i64>() {
+        ScalarValue::Int(i)
+    } else if let Ok(f) = value_str.parse::<f64>() {
+        ScalarValue::F64(f)
+    } else {
+        ScalarValue::Str(value_str.into())
+    };
+
+    // Capture change bytes
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .create_mark_with_change(path, mark_name, value, start, end, expand)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    };
+
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.markcreate", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.markcreate", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_markclear(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.MARKCLEAR <key> <path> <name> <start> <end> [expand]
+    if args.len() < 6 || args.len() > 7 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let mark_name = parse_utf8_field(&args[3], "name")?;
+    let start: usize = args[4]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("start must be a non-negative integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("start must be a non-negative integer"))?;
+    let end: usize = args[5]
+        .parse_integer()
+        .map_err(|_| RedisError::Str("end must be a non-negative integer"))?
+        .try_into()
+        .map_err(|_| RedisError::Str("end must be a non-negative integer"))?;
+
+    // Parse expand parameter (default to None)
+    let expand = if args.len() == 7 {
+        let expand_str = parse_utf8_value(&args[6])?;
+        match expand_str.to_lowercase().as_str() {
+            "before" => automerge::marks::ExpandMark::Before,
+            "after" => automerge::marks::ExpandMark::After,
+            "both" => automerge::marks::ExpandMark::Both,
+            "none" => automerge::marks::ExpandMark::None,
+            _ => return Err(RedisError::Str("expand must be 'before', 'after', 'both', or 'none'")),
+        }
+    } else {
+        automerge::marks::ExpandMark::None
+    };
+
+    // Capture change bytes
+    let change_bytes = {
+        let key = ctx.open_key_writable(key_name);
+        let client = key
+            .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+            .ok_or(RedisError::Str("no such key"))?;
+        client
+            .clear_mark_with_change(path, mark_name, start, end, expand)
+            .map_err(|e| RedisError::String(e.to_string()))?
+    };
+
+    publish_change(ctx, key_name, change_bytes)?;
+
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate("am.markclear", &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.markclear", key_name);
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_marks(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.MARKS <key> <path>
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    let marks = client
+        .get_marks(path)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Return as array of arrays: [[name, value, start, end], ...]
+    let mut result = Vec::new();
+    for (name, value, start, end) in marks {
+        let mut mark_array = Vec::new();
+        mark_array.push(RedisValue::BulkString(name));
+
+        // Convert value to Redis value
+        use automerge::ScalarValue;
+        let value_str = match value {
+            ScalarValue::Str(s) => s.to_string(),
+            ScalarValue::Int(i) => i.to_string(),
+            ScalarValue::F64(f) => f.to_string(),
+            ScalarValue::Boolean(b) => b.to_string(),
+            ScalarValue::Counter(c) => i64::from(&c).to_string(),
+            ScalarValue::Timestamp(ts) => ts.to_string(),
+            ScalarValue::Null => "null".to_string(),
+            _ => "unknown".to_string(),
+        };
+        mark_array.push(RedisValue::BulkString(value_str));
+        mark_array.push(RedisValue::Integer(start as i64));
+        mark_array.push(RedisValue::Integer(end as i64));
+
+        result.push(RedisValue::Array(mark_array));
+    }
+
+    Ok(RedisValue::Array(result))
+}
+
 fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() != 4 {
         return Err(RedisError::WrongArity);
@@ -987,6 +1151,9 @@ redis_module! {
         ["am.gettext", am_gettext, "readonly", 1, 1, 1],
         ["am.putdiff", am_putdiff, "write deny-oom", 1, 1, 1],
         ["am.splicetext", am_splicetext, "write deny-oom", 1, 1, 1],
+        ["am.markcreate", am_markcreate, "write deny-oom", 1, 1, 1],
+        ["am.markclear", am_markclear, "write deny-oom", 1, 1, 1],
+        ["am.marks", am_marks, "readonly", 1, 1, 1],
         ["am.putint", am_putint, "write deny-oom", 1, 1, 1],
         ["am.getint", am_getint, "readonly", 1, 1, 1],
         ["am.putdouble", am_putdouble, "write deny-oom", 1, 1, 1],

@@ -37,8 +37,9 @@
 //! ```
 
 use automerge::{
-    transaction::Transactable, Automerge, AutomergeError, Change, ChangeHash, ObjId, ReadDoc,
-    ScalarValue, Value, ROOT,
+    marks::{ExpandMark, Mark},
+    transaction::Transactable,
+    Automerge, AutomergeError, Change, ChangeHash, ObjId, ReadDoc, ScalarValue, Value, ROOT,
 };
 use chrono::{DateTime, Utc};
 
@@ -2163,6 +2164,392 @@ impl RedisAutomergeClient {
         }
 
         Ok(client)
+    }
+
+    /// Create a mark on a text object at the specified path.
+    ///
+    /// Marks allow attaching metadata to ranges of text, useful for rich text formatting
+    /// (bold, italic, comments, etc.). Only one mark of the same name can affect a position.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the text object
+    /// * `name` - Name of the mark (e.g., "bold", "comment")
+    /// * `value` - Scalar value for the mark
+    /// * `start` - Start position (0-indexed)
+    /// * `end` - End position (exclusive)
+    /// * `expand` - How the mark expands when text is inserted at boundaries
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    /// use automerge::marks::ExpandMark;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("doc", "Hello World").unwrap();
+    ///
+    /// // Mark "World" as bold
+    /// client.create_mark("doc", "bold", true.into(), 6, 11, ExpandMark::None).unwrap();
+    /// ```
+    pub fn create_mark(
+        &mut self,
+        path: &str,
+        name: &str,
+        value: ScalarValue,
+        start: usize,
+        end: usize,
+        expand: ExpandMark,
+    ) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        let mark = Mark::new(name.to_string(), value, start, end);
+        tx.mark(&text_obj, mark, expand)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Create a mark on a text object and return the raw change bytes.
+    pub fn create_mark_with_change(
+        &mut self,
+        path: &str,
+        name: &str,
+        value: ScalarValue,
+        start: usize,
+        end: usize,
+        expand: ExpandMark,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        let mark = Mark::new(name.to_string(), value, start, end);
+        tx.mark(&text_obj, mark, expand)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Remove a mark from a text object at the specified path.
+    ///
+    /// Removes a mark with the given name from the specified range of text.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the text object
+    /// * `name` - Name of the mark to remove
+    /// * `start` - Start position (0-indexed)
+    /// * `end` - End position (exclusive)
+    /// * `expand` - How the mark expands when text is inserted at boundaries
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    /// use automerge::marks::ExpandMark;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("doc", "Hello World").unwrap();
+    /// client.create_mark("doc", "bold", true.into(), 6, 11, ExpandMark::None).unwrap();
+    ///
+    /// // Remove the bold mark
+    /// client.clear_mark("doc", "bold", 6, 11, ExpandMark::None).unwrap();
+    /// ```
+    pub fn clear_mark(
+        &mut self,
+        path: &str,
+        name: &str,
+        start: usize,
+        end: usize,
+        expand: ExpandMark,
+    ) -> Result<(), AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        tx.unmark(&text_obj, name, start, end, expand)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                self.aof.push(change.raw_bytes().to_vec());
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove a mark from a text object and return the raw change bytes.
+    pub fn clear_mark_with_change(
+        &mut self,
+        path: &str,
+        name: &str,
+        start: usize,
+        end: usize,
+        expand: ExpandMark,
+    ) -> Result<Option<Vec<u8>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        // Get parent object
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        // Check what exists at the path
+        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
+            Some((Value::Scalar(s), _)) => {
+                // Convert scalar string to Text object
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    // Clone the text to avoid borrow checker issues
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => {
+                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
+                        }
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    // Insert existing text
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    text_obj
+                } else {
+                    return Err(AutomergeError::Fail);
+                }
+            }
+            _ => return Err(AutomergeError::Fail),
+        };
+
+        let mut tx = self.doc.transaction();
+        tx.unmark(&text_obj, name, start, end, expand)?;
+        let (hash, _patch) = tx.commit();
+
+        if let Some(h) = hash {
+            if let Some(change) = self.doc.get_change_by_hash(&h) {
+                let change_bytes = change.raw_bytes().to_vec();
+                self.aof.push(change_bytes.clone());
+                return Ok(Some(change_bytes));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Get all marks on a text object at the specified path.
+    ///
+    /// Returns a vector of marks containing their name, value, start, and end positions.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the text object
+    ///
+    /// # Returns
+    ///
+    /// A vector of tuples `(name, value, start, end)` for each mark.
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    /// use automerge::marks::ExpandMark;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("doc", "Hello World").unwrap();
+    /// client.create_mark("doc", "bold", true.into(), 6, 11, ExpandMark::None).unwrap();
+    ///
+    /// let marks = client.get_marks("doc").unwrap();
+    /// // Returns: vec![("bold", ScalarValue::Boolean(true), 6, 11)]
+    /// ```
+    pub fn get_marks(
+        &self,
+        path: &str,
+    ) -> Result<Vec<(String, ScalarValue, usize, usize)>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        let text_obj = if segments.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, &segments)? {
+                Some(obj) => obj,
+                None => return Ok(Vec::new()),
+            }
+        };
+
+        let marks = self.doc.marks(&text_obj)?;
+        let result = marks
+            .into_iter()
+            .map(|m| {
+                (
+                    m.name().to_string(),
+                    m.value().clone(),
+                    m.start,
+                    m.end,
+                )
+            })
+            .collect();
+        Ok(result)
     }
 }
 
