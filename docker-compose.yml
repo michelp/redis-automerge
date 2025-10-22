@@ -25,7 +25,7 @@ services:
     volumes:
       - .:/workspace
     working_dir: /workspace
-    entrypoint: ["bash", "scripts/test-module.sh"]
+    entrypoint: ["bash", "scripts/tests/run-all-tests.sh"]
     environment:
       REDIS_HOST: redis
       WEBDIS_HOST: webdis
