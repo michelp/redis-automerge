@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/michelp/redis-automerge/actions/workflows/ci.yml/badge.svg)](https://github.com/michelp/redis-automerge/actions/workflows/ci.yml)
 [![Documentation](https://github.com/michelp/redis-automerge/actions/workflows/docs.yml/badge.svg)](https://github.com/michelp/redis-automerge/actions/workflows/docs.yml)
+[![Docker Hub](https://img.shields.io/docker/v/metagration/redis-automerge?label=docker&logo=docker)](https://hub.docker.com/r/metagration/redis-automerge)
+[![Docker Pulls](https://img.shields.io/docker/pulls/metagration/redis-automerge)](https://hub.docker.com/r/metagration/redis-automerge)
 
 A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflict-free Replicated Data Type) documents into Redis, providing JSON-like document storage with automatic conflict resolution.
 
@@ -19,6 +21,54 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 - **Change history** - retrieve document changes for synchronization
 - **Persistent storage** via Redis RDB and AOF
 - **Replication support** for Redis clusters
+
+## Quick Start with Docker
+
+The easiest way to get started is using the pre-built Docker image from Docker Hub:
+
+```bash
+# Pull and run the latest version
+docker pull metagration/redis-automerge:latest
+docker run -d -p 6379:6379 metagration/redis-automerge:latest
+
+# Test it works
+redis-cli PING
+redis-cli AM.NEW mydoc
+redis-cli AM.PUTTEXT mydoc greeting "Hello, Automerge!"
+redis-cli AM.GETTEXT mydoc greeting
+```
+
+### Using Docker Compose
+
+Create a `docker-compose.yml`:
+
+```yaml
+version: '3.8'
+services:
+  redis:
+    image: metagration/redis-automerge:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:
+```
+
+Then run:
+
+```bash
+docker compose up -d
+```
+
+### Available Tags
+
+- `latest` - Latest stable release
+- `1.0.0`, `1.0`, `1` - Semantic version tags
+- `main-<sha>` - Development builds from main branch
+
+See all available tags at: https://hub.docker.com/r/metagration/redis-automerge/tags
 
 ## Building
 
