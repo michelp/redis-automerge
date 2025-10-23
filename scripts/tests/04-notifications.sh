@@ -138,5 +138,13 @@ json='{"name":"test"}'
 test_notification "notif_fromjson" "am.fromjson" "echo '$json' | redis-cli -h $HOST -x am.fromjson notif_fromjson"
 echo "   ✓ AM.FROMJSON emits keyspace notification"
 
+echo "Test 19: DEL notification (automatic via Redis)..."
+redis-cli -h "$HOST" del notif_del_test > /dev/null
+redis-cli -h "$HOST" am.new notif_del_test > /dev/null
+redis-cli -h "$HOST" am.puttext notif_del_test field "test value" > /dev/null
+# Test that DEL emits keyspace notification (handled by Redis, not the module)
+test_notification "notif_del_test" "del" "redis-cli -h $HOST del notif_del_test"
+echo "   ✓ DEL emits keyspace notification (automatic via Redis)"
+
 echo ""
 echo "✅ All keyspace notification tests passed!"

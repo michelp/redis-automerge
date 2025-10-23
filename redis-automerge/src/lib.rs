@@ -172,8 +172,13 @@ fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let data = args.next_arg()?;
     let client = RedisAutomergeClient::load(data.as_slice())
         .map_err(|e| RedisError::String(e.to_string()))?;
-    let key = ctx.open_key_writable(&key_name);
-    key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
+
+    // Set value and close key before calling replicate
+    {
+        let key = ctx.open_key_writable(&key_name);
+        key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
+    } // key is dropped here
+
     ctx.replicate("am.load", &[&key_name, &data]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.load", &key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
@@ -184,8 +189,13 @@ fn am_new(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         return Err(RedisError::WrongArity);
     }
     let key_name = &args[1];
-    let key = ctx.open_key_writable(key_name);
-    key.set_value(&REDIS_AUTOMERGE_TYPE, RedisAutomergeClient::new())?;
+
+    // Create document and close key before calling replicate
+    {
+        let key = ctx.open_key_writable(key_name);
+        key.set_value(&REDIS_AUTOMERGE_TYPE, RedisAutomergeClient::new())?;
+    } // key is dropped here
+
     ctx.replicate("am.new", &[key_name]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.new", key_name);
     Ok(RedisValue::SimpleStringStatic("OK"))
