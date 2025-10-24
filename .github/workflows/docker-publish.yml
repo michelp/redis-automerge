@@ -23,6 +23,9 @@ env:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for creating releases
+      packages: write  # Required for pushing to registries
 
     steps:
       - name: Checkout code
