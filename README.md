@@ -91,13 +91,17 @@ docker compose down
 
 ### Available Tags
 
-All images are automatically built and tested before publishing.
+All images are automatically built and tested before publishing. When a version tag is pushed, the workflow automatically:
+- Builds and tests the Docker image
+- Pushes to Docker Hub (if tests pass)
+- Creates a GitHub release with documentation
 
 - **`latest`** - Latest stable release (recommended)
 - **`1.0.0`, `1.0`, `1`** - Semantic version tags for specific releases
-- **`main-<sha>`** - Development builds from main branch (not recommended for production)
 
 **Browse all tags**: https://hub.docker.com/r/metagration/redis-automerge/tags
+
+**View releases**: https://github.com/michelp/redis-automerge/releases
 
 ### Updating to Latest Version
 

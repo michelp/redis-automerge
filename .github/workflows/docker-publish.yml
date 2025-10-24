@@ -1,5 +1,10 @@
 name: Build and Publish Docker Image
 
+# Workflow behavior:
+# - Push to main/master: Build and test only (no Docker Hub push)
+# - Version tags (v*.*.*): Build, test, and push to Docker Hub
+# - Pull requests: Build and test only (no Docker Hub push)
+
 on:
   push:
     branches:
@@ -27,7 +32,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -43,15 +48,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Always tag latest on main/master or version tags
-            type=raw,value=latest,enable={{is_default_branch}}
+            # Tag latest for version releases
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            # For PRs, tag with PR number
-            type=ref,event=pr
-            # For branches, tag with branch name
-            type=ref,event=branch
-            # Add commit SHA for branch builds only (not for version tags)
-            type=sha,prefix={{branch}}-,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
@@ -70,7 +68,7 @@ jobs:
           docker compose down
 
       - name: Push Docker image to Docker Hub
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -81,7 +79,43 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Display pushed tags
-        if: github.event_name != 'pull_request'
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           echo "Successfully pushed the following tags:"
           echo "${{ steps.meta.outputs.tags }}"
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
+        with:
+          generate_release_notes: true
+          body: |
+            ## Docker Images
+
+            This release is available on Docker Hub:
+
+            ```bash
+            docker pull metagration/redis-automerge:${{ steps.meta.outputs.version }}
+            docker pull metagration/redis-automerge:latest
+            ```
+
+            ### Available Tags
+            ${{ steps.meta.outputs.tags }}
+
+            ### Quick Start
+
+            ```bash
+            # Run Redis with the module
+            docker run -d -p 6379:6379 metagration/redis-automerge:${{ steps.meta.outputs.version }}
+
+            # Test it works
+            redis-cli AM.NEW mydoc
+            redis-cli AM.PUTTEXT mydoc greeting "Hello, Automerge!"
+            redis-cli AM.GETTEXT mydoc greeting
+            ```
+
+            ### Full Documentation
+
+            See the [README](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/README.md) for complete documentation.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
