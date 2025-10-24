@@ -206,6 +206,57 @@ AM.CHANGES mydoc <hash1> <hash2>
 
 This command is essential for synchronizing document state between clients. A client can request only the changes it doesn't have by providing the hashes of changes it already knows about.
 
+#### `AM.GETDIFF <key> BEFORE <hash>... AFTER <hash>...`
+Get the diff between two document states. Returns a JSON array of patches describing what changed between the two states.
+
+```redis
+# Compare initial state (empty) to current state (empty arrays = all changes)
+AM.GETDIFF mydoc BEFORE AFTER
+
+# Compare two specific states by their change hashes
+AM.GETDIFF mydoc BEFORE <hash1> AFTER <hash2> <hash3>
+```
+
+This command uses Automerge's diff functionality to compare two document states identified by their change hashes (heads). Each patch in the result describes a specific change including the path, type of operation, and values.
+
+**Use cases:**
+- Discovering what changed since a client's last sync
+- Building change logs or audit trails
+- Debugging document history
+- Implementing incremental UI updates
+
+**Example - Tracking document changes:**
+
+```redis
+# Create document and capture initial state
+AM.NEW project
+AM.PUTTEXT project name "Alpha"
+AM.PUTINT project version 1
+
+# Get current change hashes for "before" state
+AM.CHANGES project
+# Returns: [<hash1>, <hash2>, <hash3>]
+
+# Make more changes
+AM.PUTTEXT project name "Beta"
+AM.PUTINT project version 2
+AM.PUTTEXT project status "active"
+
+# Get new change hashes for "after" state
+AM.CHANGES project
+# Returns: [<hash1>, <hash2>, <hash3>, <hash4>, <hash5>, <hash6>]
+
+# Get diff showing what changed
+AM.GETDIFF project BEFORE <hash1> <hash2> <hash3> AFTER <hash4> <hash5> <hash6>
+# Returns JSON showing name changed from "Alpha" to "Beta",
+# version changed from 1 to 2, and status was added
+```
+
+**Empty arrays:**
+- Empty BEFORE (no hashes): represents initial/empty document state
+- Empty AFTER (no hashes): represents current document state
+- Both empty: shows diff from empty to current state
+
 #### `AM.TOJSON <key> [pretty]`
 Export an Automerge document to JSON format. Converts all maps, lists, and scalar values to their JSON equivalents.
 

@@ -39,7 +39,7 @@
 use automerge::{
     marks::{ExpandMark, Mark},
     transaction::Transactable,
-    Automerge, AutomergeError, Change, ChangeHash, ObjId, ReadDoc, ScalarValue, Value, ROOT,
+    Automerge, AutomergeError, Change, ChangeHash, ObjId, Patch, ReadDoc, ScalarValue, Value, ROOT,
 };
 use chrono::{DateTime, Utc};
 
@@ -1669,6 +1669,43 @@ impl RedisAutomergeClient {
     /// ```
     pub fn get_changes(&self, have_deps: &[ChangeHash]) -> Vec<Change> {
         self.doc.get_changes(have_deps)
+    }
+
+    /// Get the diff between two document states.
+    ///
+    /// This uses Automerge's `diff` function to compare two document states identified by
+    /// their change hashes (heads). It returns a vector of patches describing what changed
+    /// between the two states.
+    ///
+    /// # Arguments
+    ///
+    /// * `before_heads` - Change hashes representing the "before" state
+    /// * `after_heads` - Change hashes representing the "after" state
+    ///
+    /// # Returns
+    ///
+    /// A vector of `Patch` objects describing the differences. Each patch indicates:
+    /// - The path to the changed object
+    /// - The type of change (PutMap, PutSeq, DeleteMap, DeleteSeq, Insert, Increment, etc.)
+    /// - The old and new values
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("name", "Alice").unwrap();
+    /// let before_heads = client.get_changes(&[]).iter().map(|c| c.hash()).collect::<Vec<_>>();
+    ///
+    /// client.put_text("name", "Bob").unwrap();
+    /// let after_heads = client.get_changes(&[]).iter().map(|c| c.hash()).collect::<Vec<_>>();
+    ///
+    /// let patches = client.get_diff(&before_heads, &after_heads);
+    /// // patches will show name changing from "Alice" to "Bob"
+    /// ```
+    pub fn get_diff(&self, before_heads: &[ChangeHash], after_heads: &[ChangeHash]) -> Vec<Patch> {
+        self.doc.diff(before_heads, after_heads)
     }
 
     /// Splice text at the specified path.

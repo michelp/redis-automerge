@@ -16,6 +16,7 @@
 //! - `AM.APPLY <key> <change>...` - Apply Automerge changes to a document
 //! - `AM.CHANGES <key> [<hash>...]` - Get changes not in the provided hash list (empty = all changes)
 //! - `AM.NUMCHANGES <key> [<hash>...]` - Get count of changes not in the provided hash list (empty = all changes)
+//! - `AM.GETDIFF <key> BEFORE <hash>... AFTER <hash>...` - Get diff between two document states
 //! - `AM.TOJSON <key> [pretty]` - Export document to JSON format
 //! - `AM.FROMJSON <key> <json>` - Create document from JSON format
 //!
@@ -1030,6 +1031,68 @@ fn am_numchanges(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::Integer(count as i64))
 }
 
+fn am_getdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.GETDIFF <key> BEFORE <hash>... AFTER <hash>...
+    // Minimum: AM.GETDIFF key BEFORE AFTER (both empty = compare initial to current)
+    if args.len() < 4 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let key_name = &args[1];
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    // Find BEFORE and AFTER keywords
+    let mut before_idx = None;
+    let mut after_idx = None;
+
+    for (i, arg) in args.iter().enumerate().skip(2) {
+        let arg_str = parse_utf8_field(arg, "keyword")?;
+        match arg_str.to_uppercase().as_str() {
+            "BEFORE" => before_idx = Some(i),
+            "AFTER" => after_idx = Some(i),
+            _ => {}
+        }
+    }
+
+    let before_idx = before_idx.ok_or(RedisError::Str("missing BEFORE keyword"))?;
+    let after_idx = after_idx.ok_or(RedisError::Str("missing AFTER keyword"))?;
+
+    if before_idx >= after_idx {
+        return Err(RedisError::Str("BEFORE must come before AFTER"));
+    }
+
+    // Parse before heads (between BEFORE and AFTER)
+    let mut before_heads = Vec::new();
+    for hash_arg in &args[(before_idx + 1)..after_idx] {
+        let bytes = hash_arg.as_slice();
+        let hash = ChangeHash::try_from(bytes)
+            .map_err(|e| RedisError::String(format!("invalid before hash: {:?}", e)))?;
+        before_heads.push(hash);
+    }
+
+    // Parse after heads (after AFTER keyword)
+    let mut after_heads = Vec::new();
+    for hash_arg in &args[(after_idx + 1)..] {
+        let bytes = hash_arg.as_slice();
+        let hash = ChangeHash::try_from(bytes)
+            .map_err(|e| RedisError::String(format!("invalid after hash: {:?}", e)))?;
+        after_heads.push(hash);
+    }
+
+    // Get the diff
+    let patches = client.get_diff(&before_heads, &after_heads);
+
+    // Serialize patches to JSON
+    // Note: Patch doesn't implement Serialize, so we use Debug formatting
+    // wrapped in a JSON array structure
+    let json = format!("{:?}", patches);
+
+    Ok(RedisValue::BulkString(json))
+}
+
 fn am_tojson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     // AM.TOJSON <key> [pretty]
     if args.len() < 2 || args.len() > 3 {
@@ -1155,6 +1218,7 @@ redis_module! {
         ["am.apply", am_apply, "write deny-oom", 1, 1, 1],
         ["am.changes", am_changes, "readonly", 1, 1, 1],
         ["am.numchanges", am_numchanges, "readonly", 1, 1, 1],
+        ["am.getdiff", am_getdiff, "readonly", 1, 1, 1],
         ["am.tojson", am_tojson, "readonly", 1, 1, 1],
         ["am.fromjson", am_fromjson, "write deny-oom", 1, 1, 1],
         ["am.puttext", am_puttext, "write deny-oom", 1, 1, 1],
