@@ -43,14 +43,15 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # Always tag latest on main/master
+            # Always tag latest on main/master or version tags
             type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             # For PRs, tag with PR number
             type=ref,event=pr
             # For branches, tag with branch name
             type=ref,event=branch
-            # Add commit SHA for traceability
-            type=sha,prefix={{branch}}-
+            # Add commit SHA for branch builds only (not for version tags)
+            type=sha,prefix={{branch}}-,enable=${{ !startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build Docker image
         uses: docker/build-push-action@v5
