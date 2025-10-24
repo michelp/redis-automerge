@@ -24,18 +24,35 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
 
 ## Quick Start with Docker
 
-The easiest way to get started is using the pre-built Docker image from Docker Hub:
+### Pre-Built Images from Docker Hub
+
+The easiest way to get started is using pre-built images available on Docker Hub at **[metagration/redis-automerge](https://hub.docker.com/r/metagration/redis-automerge)**.
+
+#### Pull Latest Image
 
 ```bash
-# Pull and run the latest version
+# Pull the latest stable version
 docker pull metagration/redis-automerge:latest
-docker run -d -p 6379:6379 metagration/redis-automerge:latest
+
+# Run Redis with the module loaded
+docker run -d --name redis-automerge -p 6379:6379 metagration/redis-automerge:latest
 
 # Test it works
 redis-cli PING
 redis-cli AM.NEW mydoc
 redis-cli AM.PUTTEXT mydoc greeting "Hello, Automerge!"
 redis-cli AM.GETTEXT mydoc greeting
+# Returns: "Hello, Automerge!"
+```
+
+#### Pull Specific Version
+
+```bash
+# Pull a specific version
+docker pull metagration/redis-automerge:1.0.0
+
+# Run the specific version
+docker run -d -p 6379:6379 metagration/redis-automerge:1.0.0
 ```
 
 ### Using Docker Compose
@@ -47,10 +64,13 @@ version: '3.8'
 services:
   redis:
     image: metagration/redis-automerge:latest
+    # Or pin to specific version for production:
+    # image: metagration/redis-automerge:1.0.0
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    restart: unless-stopped
 
 volumes:
   redis-data:
@@ -59,16 +79,41 @@ volumes:
 Then run:
 
 ```bash
+# Start Redis with module
 docker compose up -d
+
+# View logs
+docker compose logs -f redis
+
+# Stop
+docker compose down
 ```
 
 ### Available Tags
 
-- `latest` - Latest stable release
-- `1.0.0`, `1.0`, `1` - Semantic version tags
-- `main-<sha>` - Development builds from main branch
+All images are automatically built and tested before publishing.
 
-See all available tags at: https://hub.docker.com/r/metagration/redis-automerge/tags
+- **`latest`** - Latest stable release (recommended)
+- **`1.0.0`, `1.0`, `1`** - Semantic version tags for specific releases
+- **`main-<sha>`** - Development builds from main branch (not recommended for production)
+
+**Browse all tags**: https://hub.docker.com/r/metagration/redis-automerge/tags
+
+### Updating to Latest Version
+
+```bash
+# Pull the latest image
+docker pull metagration/redis-automerge:latest
+
+# Recreate container with new image
+docker compose down
+docker compose up -d
+
+# Or with plain docker
+docker stop redis-automerge
+docker rm redis-automerge
+docker run -d --name redis-automerge -p 6379:6379 metagration/redis-automerge:latest
+```
 
 ## Building
 
