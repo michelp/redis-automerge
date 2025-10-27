@@ -39,6 +39,7 @@
 //! - `AM.APPENDDOUBLE <key> <path> <value>` - Append double to a list
 //! - `AM.APPENDBOOL <key> <path> <value>` - Append boolean to a list
 //! - `AM.LISTLEN <key> <path>` - Get the length of a list
+//! - `AM.MAPLEN <key> <path>` - Get the number of keys in a map
 //!
 //! # Path Syntax
 //!
@@ -938,6 +939,25 @@ fn am_listlen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
 }
 
+fn am_maplen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let path = parse_utf8_field(&args[2], "path")?;
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+    match client
+        .map_len(path)
+        .map_err(|e| RedisError::String(e.to_string()))?
+    {
+        Some(len) => Ok(RedisValue::Integer(len as i64)),
+        None => Ok(RedisValue::Null),
+    }
+}
+
 fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if args.len() < 3 {
         return Err(RedisError::WrongArity);
@@ -1245,6 +1265,7 @@ redis_module! {
         ["am.appenddouble", am_appenddouble, "write deny-oom", 1, 1, 1],
         ["am.appendbool", am_appendbool, "write deny-oom", 1, 1, 1],
         ["am.listlen", am_listlen, "readonly", 1, 1, 1],
+        ["am.maplen", am_maplen, "readonly", 1, 1, 1],
     ],
 }
 

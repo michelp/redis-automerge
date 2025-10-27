@@ -7,6 +7,91 @@
 
 A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflict-free Replicated Data Type) documents into Redis, providing JSON-like document storage with automatic conflict resolution.
 
+## Table of Contents
+
+- [Features](#features)
+- [Quick Start with Docker](#quick-start-with-docker)
+  - [Pre-Built Images from Docker Hub](#pre-built-images-from-docker-hub)
+    - [Pull Latest Image](#pull-latest-image)
+    - [Pull Specific Version](#pull-specific-version)
+  - [Using Docker Compose](#using-docker-compose)
+  - [Available Tags](#available-tags)
+  - [Updating to Latest Version](#updating-to-latest-version)
+- [Building](#building)
+  - [Requirements](#requirements)
+  - [Build from Source](#build-from-source)
+  - [Build with Docker](#build-with-docker)
+- [Running](#running)
+  - [Load Module in Redis](#load-module-in-redis)
+  - [Using Docker Compose](#using-docker-compose-1)
+- [Redis Commands](#redis-commands)
+  - [Document Management](#document-management)
+    - [`AM.NEW <key>`](#amnew-key)
+    - [`AM.SAVE <key>`](#amsave-key)
+    - [`AM.LOAD <key> <bytes>`](#amload-key-bytes)
+    - [`AM.APPLY <key> <change>...`](#amapply-key-change)
+    - [`AM.CHANGES <key> [<hash>...]`](#amchanges-key-hash)
+    - [`AM.GETDIFF <key> BEFORE <hash>... AFTER <hash>...`](#amgetdiff-key-before-hash-after-hash)
+    - [`AM.TOJSON <key> [pretty]`](#amtojson-key-pretty)
+    - [`AM.FROMJSON <key> <json>`](#amfromjson-key-json)
+  - [Value Operations](#value-operations)
+    - [`AM.PUTTEXT <key> <path> <value>`](#amputtext-key-path-value)
+    - [`AM.GETTEXT <key> <path>`](#amgettext-key-path)
+    - [`AM.SPLICETEXT <key> <path> <pos> <del> <text>`](#amsplicetext-key-path-pos-del-text)
+    - [`AM.PUTDIFF <key> <path> <diff>`](#amputdiff-key-path-diff)
+    - [`AM.PUTINT <key> <path> <value>`](#amputint-key-path-value)
+    - [`AM.GETINT <key> <path>`](#amgetint-key-path)
+    - [`AM.PUTDOUBLE <key> <path> <value>`](#amputdouble-key-path-value)
+    - [`AM.GETDOUBLE <key> <path>`](#amgetdouble-key-path)
+    - [`AM.PUTBOOL <key> <path> <value>`](#amputbool-key-path-value)
+    - [`AM.GETBOOL <key> <path>`](#amgetbool-key-path)
+    - [`AM.PUTCOUNTER <key> <path> <value>`](#amputcounter-key-path-value)
+    - [`AM.GETCOUNTER <key> <path>`](#amgetcounter-key-path)
+    - [`AM.INCCOUNTER <key> <path> <delta>`](#aminccounter-key-path-delta)
+  - [Text Marks Operations](#text-marks-operations)
+    - [`AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]`](#ammarkcreate-key-path-name-value-start-end-expand)
+    - [`AM.MARKS <key> <path>`](#ammarks-key-path)
+    - [`AM.MARKCLEAR <key> <path> <name> <start> <end> [expand]`](#ammarkclear-key-path-name-start-end-expand)
+  - [List Operations](#list-operations)
+    - [`AM.CREATELIST <key> <path>`](#amcreatelist-key-path)
+    - [`AM.APPENDTEXT <key> <path> <value>`](#amappendtext-key-path-value)
+    - [`AM.APPENDINT <key> <path> <value>`](#amappendint-key-path-value)
+    - [`AM.APPENDDOUBLE <key> <path> <value>`](#amappenddouble-key-path-value)
+    - [`AM.APPENDBOOL <key> <path> <value>`](#amappendbool-key-path-value)
+    - [`AM.LISTLEN <key> <path>`](#amlistlen-key-path)
+    - [`AM.MAPLEN <key> <path>`](#ammaplen-key-path)
+- [Real-Time Synchronization](#real-time-synchronization)
+  - [Change Notifications](#change-notifications)
+  - [Subscribing to Changes](#subscribing-to-changes)
+  - [Synchronization Pattern](#synchronization-pattern)
+  - [Loading Document State](#loading-document-state)
+- [Path Syntax](#path-syntax)
+  - [Simple Keys](#simple-keys)
+  - [Nested Maps (Dot Notation)](#nested-maps-dot-notation)
+  - [Array Indices](#array-indices)
+  - [Mixed Paths](#mixed-paths)
+  - [JSONPath Style (with $ prefix)](#jsonpath-style-with--prefix)
+- [Examples](#examples)
+  - [User Profile](#user-profile)
+  - [Shopping Cart with Items](#shopping-cart-with-items)
+  - [Configuration Document](#configuration-document)
+  - [Analytics with Counters](#analytics-with-counters)
+  - [JSON Import/Export](#json-importexport)
+  - [Rich Text Editor with Marks](#rich-text-editor-with-marks)
+  - [Marks with Expand Behavior](#marks-with-expand-behavior)
+  - [Collaborative Annotations](#collaborative-annotations)
+- [Testing](#testing)
+  - [Unit Tests](#unit-tests)
+  - [Integration Tests](#integration-tests)
+  - [Full Test Suite](#full-test-suite)
+- [Documentation](#documentation)
+  - [Online Documentation](#online-documentation)
+  - [Generate Locally](#generate-locally)
+- [Architecture](#architecture)
+  - [Key Components](#key-components)
+  - [Synchronization Flow](#synchronization-flow)
+- [Resources](#resources)
+
 ## Features
 
 - **JSON-like document storage** with RedisJSON-like path syntax
@@ -619,6 +704,47 @@ Get the length of a list.
 ```redis
 AM.LISTLEN mydoc users
 # Returns: 2
+```
+
+#### `AM.MAPLEN <key> <path>`
+Get the number of keys in a map (object).
+
+```redis
+# Get number of keys in root map
+AM.MAPLEN mydoc ""
+
+# Get number of keys in nested map
+AM.MAPLEN mydoc user
+# Returns: 3 (if user has 3 keys like name, age, email)
+
+# Get number of keys in deeply nested map
+AM.MAPLEN mydoc config.database
+# Returns: number of keys in the database config map
+```
+
+**Notes:**
+- Returns `0` for an empty map
+- Returns `null` if the path doesn't exist
+- Counts all keys in the map including nested objects and lists
+- Works with both flat keys and nested path syntax
+- Supports JSONPath-style `$` prefix
+
+**Example:**
+
+```redis
+# Create a document with nested structure
+AM.NEW config
+AM.PUTTEXT config database.host "localhost"
+AM.PUTINT config database.port 5432
+AM.PUTTEXT config database.name "mydb"
+AM.CREATELIST config features
+
+# Get map length
+AM.MAPLEN config ""
+# Returns: 2 (database and features)
+
+AM.MAPLEN config database
+# Returns: 3 (host, port, name)
 ```
 
 ## Real-Time Synchronization

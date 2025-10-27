@@ -1636,6 +1636,41 @@ impl RedisAutomergeClient {
         Ok(Some(self.doc.length(&list_obj)))
     }
 
+    /// Returns the number of keys in a map at the specified path.
+    ///
+    /// Returns `None` if the path doesn't exist or doesn't point to a map.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the map
+    ///
+    /// # Examples
+    ///
+    /// ```rust,no_run
+    /// use redis_automerge::ext::RedisAutomergeClient;
+    ///
+    /// let mut client = RedisAutomergeClient::new();
+    /// client.put_text("name", "Alice").unwrap();
+    /// client.put_text("age", "30").unwrap();
+    ///
+    /// assert_eq!(client.map_len("").unwrap(), Some(2));
+    /// assert_eq!(client.map_len("missing").unwrap(), None);
+    /// ```
+    pub fn map_len(&self, path: &str) -> Result<Option<usize>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        let map_obj = if segments.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, &segments)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        Ok(Some(self.doc.keys(&map_obj).count()))
+    }
+
     /// Get changes from the document that are not in the provided have_deps list.
     ///
     /// This exposes the Automerge `get_changes` API, which returns all changes
