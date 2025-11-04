@@ -42,6 +42,7 @@ use automerge::{
     Automerge, AutomergeError, Change, ChangeHash, ObjId, Patch, ReadDoc, ScalarValue, Value, ROOT,
 };
 use chrono::{DateTime, Utc};
+use serde_json::Value as JsonValue;
 
 /// Represents a diff operation parsed from unified diff format
 #[derive(Debug, PartialEq)]
@@ -52,6 +53,55 @@ enum DiffOp {
     Delete(String),
     /// Line to be added
     Add(String),
+}
+
+/// Represents a typed value extracted from an Automerge document
+/// This is used for building JSON index documents with proper types
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypedValue {
+    Text(String),
+    Int(i64),
+    Double(f64),
+    Bool(bool),
+    Timestamp(i64),
+    Counter(i64),
+    Array(Vec<TypedValue>),
+    Object(std::collections::HashMap<String, TypedValue>),
+    Null,
+}
+
+impl TypedValue {
+    /// Convert TypedValue to serde_json::Value for JSON serialization
+    pub fn to_json(&self) -> JsonValue {
+        match self {
+            TypedValue::Text(s) => JsonValue::String(s.clone()),
+            TypedValue::Int(i) => JsonValue::Number((*i).into()),
+            TypedValue::Double(f) => {
+                serde_json::Number::from_f64(*f)
+                    .map(JsonValue::Number)
+                    .unwrap_or(JsonValue::Null)
+            }
+            TypedValue::Bool(b) => JsonValue::Bool(*b),
+            TypedValue::Timestamp(ts) => {
+                // Convert to ISO 8601 string for JSON
+                let dt = DateTime::from_timestamp_millis(*ts)
+                    .unwrap_or_else(|| DateTime::<Utc>::UNIX_EPOCH);
+                JsonValue::String(dt.to_rfc3339())
+            }
+            TypedValue::Counter(c) => JsonValue::Number((*c).into()),
+            TypedValue::Array(arr) => {
+                JsonValue::Array(arr.iter().map(|v| v.to_json()).collect())
+            }
+            TypedValue::Object(obj) => {
+                let map: serde_json::Map<String, JsonValue> = obj
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.to_json()))
+                    .collect();
+                JsonValue::Object(map)
+            }
+            TypedValue::Null => JsonValue::Null,
+        }
+    }
 }
 
 /// Parse a unified diff into operations
@@ -862,6 +912,220 @@ impl RedisAutomergeClient {
                 return Ok(Some(i64::from(c)));
             }
         }
+        Ok(None)
+    }
+
+    /// Get a value with type information from the specified path.
+    ///
+    /// This method extracts values preserving their Automerge types, which is
+    /// useful for building JSON index documents with proper type representation.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the value
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(TypedValue)` if the path exists, `None` otherwise.
+    pub fn get_typed_value(&self, path: &str) -> Result<Option<TypedValue>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        if segments.is_empty() {
+            return Ok(None);
+        }
+
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Scalar(s), _)) => {
+                let typed_val = match s.as_ref() {
+                    ScalarValue::Str(text) => TypedValue::Text(text.to_string()),
+                    ScalarValue::Int(i) => TypedValue::Int(*i),
+                    ScalarValue::F64(f) => TypedValue::Double(*f),
+                    ScalarValue::Boolean(b) => TypedValue::Bool(*b),
+                    ScalarValue::Timestamp(ts) => TypedValue::Timestamp(*ts),
+                    ScalarValue::Counter(c) => TypedValue::Counter(i64::from(c)),
+                    ScalarValue::Null => TypedValue::Null,
+                    _ => TypedValue::Null,
+                };
+                Ok(Some(typed_val))
+            }
+            Some((Value::Object(obj_type), obj_id)) => {
+                // Handle Text objects
+                if obj_type == automerge::ObjType::Text {
+                    let text = self.doc.text(&obj_id)?;
+                    return Ok(Some(TypedValue::Text(text)));
+                }
+
+                // Handle List objects - return as Array
+                if obj_type == automerge::ObjType::List {
+                    let mut arr = Vec::new();
+                    let len = self.doc.length(&obj_id);
+                    for i in 0..len {
+                        if let Some((value, value_obj_id)) = self.doc.get(&obj_id, i)? {
+                            if let Some(typed_val) = self.value_to_typed(&value, &value_obj_id)? {
+                                arr.push(typed_val);
+                            }
+                        }
+                    }
+                    return Ok(Some(TypedValue::Array(arr)));
+                }
+
+                // Handle Map objects
+                if obj_type == automerge::ObjType::Map {
+                    let mut map = std::collections::HashMap::new();
+                    for key in self.doc.keys(&obj_id) {
+                        if let Some((value, value_obj_id)) = self.doc.get(&obj_id, &key)? {
+                            if let Some(typed_val) = self.value_to_typed(&value, &value_obj_id)? {
+                                map.insert(key, typed_val);
+                            }
+                        }
+                    }
+                    return Ok(Some(TypedValue::Object(map)));
+                }
+
+                Ok(None)
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Helper method to convert Automerge Value to TypedValue
+    fn value_to_typed(
+        &self,
+        value: &Value,
+        obj_id: &ObjId,
+    ) -> Result<Option<TypedValue>, AutomergeError> {
+        match value {
+            Value::Scalar(s) => {
+                let typed_val = match s.as_ref() {
+                    ScalarValue::Str(text) => TypedValue::Text(text.to_string()),
+                    ScalarValue::Int(i) => TypedValue::Int(*i),
+                    ScalarValue::F64(f) => TypedValue::Double(*f),
+                    ScalarValue::Boolean(b) => TypedValue::Bool(*b),
+                    ScalarValue::Timestamp(ts) => TypedValue::Timestamp(*ts),
+                    ScalarValue::Counter(c) => TypedValue::Counter(i64::from(c)),
+                    ScalarValue::Null => TypedValue::Null,
+                    _ => TypedValue::Null,
+                };
+                Ok(Some(typed_val))
+            }
+            Value::Object(obj_type) => {
+                // Handle Text objects
+                if *obj_type == automerge::ObjType::Text {
+                    let text = self.doc.text(obj_id)?;
+                    return Ok(Some(TypedValue::Text(text)));
+                }
+
+                // Handle List objects
+                if *obj_type == automerge::ObjType::List {
+                    let mut arr = Vec::new();
+                    let len = self.doc.length(obj_id);
+                    for i in 0..len {
+                        if let Some((val, val_obj_id)) = self.doc.get(obj_id, i)? {
+                            if let Some(typed_val) = self.value_to_typed(&val, &val_obj_id)? {
+                                arr.push(typed_val);
+                            }
+                        }
+                    }
+                    return Ok(Some(TypedValue::Array(arr)));
+                }
+
+                // Handle Map objects
+                if *obj_type == automerge::ObjType::Map {
+                    let mut map = std::collections::HashMap::new();
+                    for key in self.doc.keys(obj_id) {
+                        if let Some((val, val_obj_id)) = self.doc.get(obj_id, &key)? {
+                            if let Some(typed_val) = self.value_to_typed(&val, &val_obj_id)? {
+                                map.insert(key, typed_val);
+                            }
+                        }
+                    }
+                    return Ok(Some(TypedValue::Object(map)));
+                }
+
+                Ok(None)
+            }
+        }
+    }
+
+    /// Get all values from a list at the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the list
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Vec<TypedValue>)` if the path points to a list, `None` otherwise.
+    pub fn get_list_values(&self, path: &str) -> Result<Option<Vec<TypedValue>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        let list_obj = if segments.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, &segments)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        // Check if it's a list
+        let obj_type = self.doc.object_type(&list_obj)?;
+        if obj_type == automerge::ObjType::List {
+            let mut values = Vec::new();
+            let len = self.doc.length(&list_obj);
+
+            for i in 0..len {
+                if let Some((value, value_obj_id)) = self.doc.get(&list_obj, i)? {
+                    if let Some(typed_val) = self.value_to_typed(&value, &value_obj_id)? {
+                        values.push(typed_val);
+                    }
+                }
+            }
+
+            return Ok(Some(values));
+        }
+
+        Ok(None)
+    }
+
+    /// Get all keys from a map at the specified path.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - Path to the map
+    ///
+    /// # Returns
+    ///
+    /// Returns `Some(Vec<String>)` if the path points to a map, `None` otherwise.
+    pub fn get_map_keys(&self, path: &str) -> Result<Option<Vec<String>>, AutomergeError> {
+        let segments = parse_path(path)?;
+
+        let map_obj = if segments.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, &segments)? {
+                Some(obj) => obj,
+                None => return Ok(None),
+            }
+        };
+
+        // Check if it's a map
+        let obj_type = self.doc.object_type(&map_obj)?;
+        if obj_type == automerge::ObjType::Map {
+            let keys: Vec<String> = self.doc.keys(&map_obj).collect();
+            return Ok(Some(keys));
+        }
+
         Ok(None)
     }
 

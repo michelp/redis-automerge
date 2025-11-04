@@ -1100,6 +1100,378 @@ AM.TOJSON doc:proposal true
 # via Redis pub/sub (changes:doc:proposal channel)
 ```
 
+## Search Indexing (RediSearch Integration)
+
+The redis-automerge module provides automatic indexing of Automerge document fields to enable full-text search via [RediSearch](https://redis.io/docs/interact/search-and-query/). When configured, the module automatically creates and maintains shadow index documents (prefixed with `am:idx:`) that mirror specified fields from your Automerge documents.
+
+### Index Formats
+
+The module supports two indexing formats:
+
+1. **Hash Format** (default): Creates Redis Hash keys with flattened field names. Best for simple text search with minimal overhead.
+2. **JSON Format**: Creates RedisJSON documents with nested structure preserved. Best for complex queries, array search, and type preservation.
+
+### How It Works
+
+1. **Configuration**: Define which key patterns to index, which paths to extract, and the index format
+2. **Automatic Updates**: When you modify indexed documents (via `AM.PUTTEXT`, `AM.FROMJSON`, etc.), shadow index documents are automatically updated
+3. **Search with RediSearch**: Use `FT.CREATE` to create a RediSearch index on the shadow documents, then query with `FT.SEARCH`
+
+### Commands
+
+#### AM.INDEX.CONFIGURE
+
+Configure indexing for a key pattern.
+
+**Syntax:**
+```
+AM.INDEX.CONFIGURE pattern [--format hash|json] path [path ...]
+```
+
+**Parameters:**
+- `pattern`: Key pattern to match (e.g., `"article:*"`, `"user:*"`)
+- `--format`: Index format, either `hash` (default) or `json`
+- `path`: One or more paths to extract from documents
+
+**Examples:**
+
+Hash format (default):
+```bash
+# Index title and content fields as Hash
+AM.INDEX.CONFIGURE "article:*" title content author.name
+
+# Explicit Hash format
+AM.INDEX.CONFIGURE "user:*" --format hash name email profile.bio
+```
+
+JSON format (requires RedisJSON):
+```bash
+# Index as JSON document with nested structure preserved
+AM.INDEX.CONFIGURE "product:*" --format json title price description tags
+
+# Index with nested paths - creates nested JSON structure
+AM.INDEX.CONFIGURE "book:*" --format json title author.name author.country price
+```
+
+#### AM.INDEX.ENABLE
+
+Enable indexing for a previously configured pattern.
+
+**Syntax:**
+```
+AM.INDEX.ENABLE pattern
+```
+
+**Example:**
+```bash
+AM.INDEX.ENABLE "article:*"
+```
+
+#### AM.INDEX.DISABLE
+
+Temporarily disable indexing for a pattern (without removing the configuration).
+
+**Syntax:**
+```
+AM.INDEX.DISABLE pattern
+```
+
+**Example:**
+```bash
+AM.INDEX.DISABLE "article:*"
+```
+
+#### AM.INDEX.REINDEX
+
+Manually rebuild the shadow Hash for a specific key.
+
+**Syntax:**
+```
+AM.INDEX.REINDEX key
+```
+
+**Returns:** `1` if index was updated, `0` if no matching configuration or no indexable fields
+
+**Example:**
+```bash
+AM.INDEX.REINDEX article:123
+```
+
+#### AM.INDEX.STATUS
+
+Show indexing configuration for one or all patterns.
+
+**Syntax:**
+```
+AM.INDEX.STATUS [pattern]
+```
+
+**Example:**
+```bash
+# Show all configurations
+AM.INDEX.STATUS
+
+# Show specific pattern
+AM.INDEX.STATUS "article:*"
+```
+
+### Hash vs JSON Format
+
+#### Hash Format
+
+**Pros:**
+- No additional dependencies
+- Lower memory overhead
+- Simple flat key-value structure
+- Fast for basic text search
+
+**Cons:**
+- Flattened field names (nested paths use underscores)
+- All values stored as text strings
+- Cannot index arrays/lists
+- No type preservation (numbers, booleans become strings)
+
+**Field Naming:**
+- Nested paths flattened with underscores: `author.name` → `author_name`
+- Array notation removed: `items[0]` → `items_0`
+
+**Example:**
+```bash
+AM.INDEX.CONFIGURE "article:*" title content author.name
+
+# Creates Hash like:
+# HGETALL am:idx:article:123
+# 1) "title"
+# 2) "Introduction to CRDTs"
+# 3) "content"
+# 4) "Conflict-free replicated data types..."
+# 5) "author_name"
+# 6) "Alice"
+```
+
+#### JSON Format
+
+**Pros:**
+- Preserves nested structure
+- Type preservation (int, double, bool)
+- Can index arrays for multi-value search
+- Complex queries with JSON path syntax
+- Better for structured data
+
+**Cons:**
+- Requires RedisJSON module
+- Higher memory overhead
+- Slightly slower updates
+
+**Requirements:**
+- RedisJSON module must be loaded: `redis-server --loadmodule /path/to/rejson.so`
+- Available in Redis Stack or as standalone module
+
+**Structure Preservation:**
+- Nested paths create nested objects: `author.name` → `{"author": {"name": "Alice"}}`
+- Arrays preserved: `tags` → `["rust", "redis", "crdt"]`
+- Types preserved: integers, doubles, booleans maintain their types
+
+**Example:**
+```bash
+AM.INDEX.CONFIGURE "product:*" --format json title price tags
+
+# Creates JSON document like:
+# JSON.GET am:idx:product:laptop
+# {
+#   "title": "ThinkPad X1",
+#   "price": 1299,
+#   "tags": ["business", "portable"]
+# }
+```
+
+### Complete Examples
+
+#### Example 1: Hash Format (Basic Text Search)
+
+```bash
+# 1. Configure indexing for article keys
+AM.INDEX.CONFIGURE "article:*" title content author tags
+
+# 2. Create some articles
+AM.NEW article:1
+AM.PUTTEXT article:1 title "Introduction to CRDTs"
+AM.PUTTEXT article:1 content "Conflict-free Replicated Data Types are amazing..."
+AM.PUTTEXT article:1 author "Alice"
+
+AM.NEW article:2
+AM.PUTTEXT article:2 title "Redis and Automerge"
+AM.PUTTEXT article:2 content "Building real-time applications with Redis..."
+AM.PUTTEXT article:2 author "Bob"
+
+# Shadow Hashes are automatically created:
+# - am:idx:article:1 with fields: title, content, author
+# - am:idx:article:2 with fields: title, content, author
+
+# 3. Create a RediSearch index on the shadow Hashes
+FT.CREATE idx:articles ON HASH PREFIX 1 am:idx:article: SCHEMA title TEXT content TEXT author TEXT
+
+# 4. Search using RediSearch
+FT.SEARCH idx:articles "CRDT"
+# Returns: article:1
+
+FT.SEARCH idx:articles "@author:Bob"
+# Returns: article:2
+
+FT.SEARCH idx:articles "real-time Redis"
+# Returns: article:2
+
+# 5. Check indexing status
+AM.INDEX.STATUS "article:*"
+# Output:
+# pattern: article:*
+# enabled: true
+# paths: title, content, author, tags
+```
+
+#### Example 2: JSON Format (Structured Data with Arrays)
+
+```bash
+# 1. Configure JSON indexing for product keys
+AM.INDEX.CONFIGURE "product:*" --format json title price inStock tags description
+
+# 2. Create some products
+AM.NEW product:laptop
+AM.PUTTEXT product:laptop title "ThinkPad X1 Carbon"
+AM.PUTINT product:laptop price 1299
+AM.PUTBOOL product:laptop inStock true
+AM.CREATELIST product:laptop tags
+AM.APPENDTEXT product:laptop tags "business"
+AM.APPENDTEXT product:laptop tags "portable"
+AM.APPENDTEXT product:laptop tags "lightweight"
+AM.PUTTEXT product:laptop description "Professional ultrabook for business users"
+
+AM.NEW product:phone
+AM.PUTTEXT product:phone title "iPhone 15"
+AM.PUTINT product:phone price 999
+AM.PUTBOOL product:phone inStock false
+AM.CREATELIST product:phone tags
+AM.APPENDTEXT product:phone tags "smartphone"
+AM.APPENDTEXT product:phone tags "5G"
+AM.PUTTEXT product:phone description "Latest iPhone with advanced features"
+
+# Shadow JSON documents are automatically created:
+# JSON.GET am:idx:product:laptop
+# {
+#   "title": "ThinkPad X1 Carbon",
+#   "price": 1299,
+#   "inStock": true,
+#   "tags": ["business", "portable", "lightweight"],
+#   "description": "Professional ultrabook for business users"
+# }
+
+# 3. Create a RediSearch index on the JSON documents
+FT.CREATE idx:products ON JSON PREFIX 1 am:idx:product: SCHEMA \
+  $.title AS title TEXT \
+  $.price AS price NUMERIC \
+  $.inStock AS inStock TAG \
+  $.tags[*] AS tags TAG \
+  $.description AS description TEXT
+
+# 4. Search using RediSearch with JSON
+# Find laptops (text search in description)
+FT.SEARCH idx:products "@description:laptop"
+
+# Find products under $1000
+FT.SEARCH idx:products "@price:[0 1000]"
+
+# Find in-stock items
+FT.SEARCH idx:products "@inStock:{true}"
+
+# Find products with "portable" tag
+FT.SEARCH idx:products "@tags:{portable}"
+
+# Combined query: portable items under $1500
+FT.SEARCH idx:products "@tags:{portable} @price:[0 1500]"
+```
+
+#### Example 3: JSON Format with Nested Structure
+
+```bash
+# Configure indexing with nested paths
+AM.INDEX.CONFIGURE "book:*" --format json title author.name author.country publisher.name price
+
+# Create a book
+AM.NEW book:rust101
+AM.PUTTEXT book:rust101 title "The Rust Programming Language"
+AM.PUTTEXT book:rust101 author.name "Steve Klabnik"
+AM.PUTTEXT book:rust101 author.country "USA"
+AM.PUTTEXT book:rust101 publisher.name "No Starch Press"
+AM.PUTINT book:rust101 price 39
+
+# Creates nested JSON structure:
+# JSON.GET am:idx:book:rust101
+# {
+#   "title": "The Rust Programming Language",
+#   "author": {
+#     "name": "Steve Klabnik",
+#     "country": "USA"
+#   },
+#   "publisher": {
+#     "name": "No Starch Press"
+#   },
+#   "price": 39
+# }
+
+# Create RediSearch index with nested paths
+FT.CREATE idx:books ON JSON PREFIX 1 am:idx:book: SCHEMA \
+  $.title AS title TEXT \
+  $.author.name AS author TEXT \
+  $.author.country AS country TAG \
+  $.publisher.name AS publisher TEXT \
+  $.price AS price NUMERIC
+
+# Search by author
+FT.SEARCH idx:books "@author:Klabnik"
+
+# Search by country
+FT.SEARCH idx:books "@country:{USA}"
+```
+
+### Field Naming
+
+**Hash format:** Nested paths are flattened with underscores:
+- `author.name` → `author_name`
+- `profile.location` → `profile_location`
+
+**JSON format:** Nested paths create nested objects:
+- `author.name` → `{"author": {"name": "..."}}`
+- `profile.location` → `{"profile": {"location": "..."}}`
+
+### Key Patterns
+
+The module supports simple wildcard patterns:
+- `article:*` - Matches all keys starting with `article:`
+- `user:*` - Matches all keys starting with `user:`
+- `*` - Matches all keys (use with caution)
+
+### Automatic Updates
+
+Shadow index documents (Hash or JSON) are automatically updated when you:
+- Modify fields: `AM.PUTTEXT`, `AM.PUTINT`, `AM.PUTDOUBLE`, `AM.PUTBOOL`
+- Append to lists: `AM.APPENDTEXT`, `AM.APPENDINT`, etc.
+- Import JSON: `AM.FROMJSON`
+- Apply changes: `AM.APPLY` (in some cases; use `AM.INDEX.REINDEX` after bulk operations)
+
+Shadow index documents are **not** automatically created when:
+- Loading documents: `AM.LOAD` (use `AM.INDEX.REINDEX` afterward)
+- Creating new documents: `AM.NEW` (wait until fields are populated)
+
+### Performance Considerations
+
+- Indexing is asynchronous and errors don't fail write operations
+- Only configured paths are indexed
+- Shadow documents are updated on every write to indexed fields
+- Use `AM.INDEX.DISABLE` during bulk imports, then `AM.INDEX.REINDEX` afterward
+- Configure indexing for specific patterns rather than using `*` to minimize overhead
+- JSON format has slightly higher overhead than Hash format but provides more features
+- Consider your use case: Hash for simple text search, JSON for complex queries with arrays and types
+
 ## Testing
 
 ### Unit Tests

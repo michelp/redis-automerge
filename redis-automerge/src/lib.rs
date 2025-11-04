@@ -76,11 +76,13 @@
 //! ```
 
 pub mod ext;
+pub mod index;
 
 use std::os::raw::{c_char, c_int, c_void};
 
 use automerge::{Change, ChangeHash};
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
+use index::IndexConfig;
 #[cfg(not(test))]
 use redis_module::redis_module;
 use redis_module::{
@@ -238,6 +240,15 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.puttext", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttext", key_name);
+
+    // Update search index
+    {
+        let key = ctx.open_key(key_name);
+        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
+            try_update_search_index(ctx, &key_name.to_string(), client);
+        }
+    }
+
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -991,6 +1002,15 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.apply", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.apply", key_name);
+
+    // Update search index
+    {
+        let key = ctx.open_key(key_name);
+        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
+            try_update_search_index(ctx, &key_name.to_string(), client);
+        }
+    }
+
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -1164,6 +1184,15 @@ fn am_fromjson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let refs: Vec<&RedisString> = args[1..].iter().collect();
     ctx.replicate("am.fromjson", &refs[..]);
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.fromjson", key_name);
+
+    // Update search index
+    {
+        let key = ctx.open_key(key_name);
+        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
+            try_update_search_index(ctx, &key_name.to_string(), client);
+        }
+    }
+
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
@@ -1224,6 +1253,164 @@ unsafe extern "C" fn am_aof_rewrite(
     );
 }
 
+// Search indexing commands
+
+/// Helper function to update search index after a document modification.
+/// This is called after write operations to keep the shadow Hash in sync.
+/// Errors in indexing are logged but don't fail the write operation.
+fn try_update_search_index(ctx: &Context, key_name: &str, client: &RedisAutomergeClient) {
+    if let Err(e) = index::update_search_index(ctx, key_name, client) {
+        // Log error but don't fail the write operation
+        ctx.log_warning(&format!("Failed to update search index for {}: {}", key_name, e));
+    }
+}
+
+fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() < 3 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let pattern = args[1].to_string();
+
+    // Parse optional --format flag
+    let mut format = index::IndexFormat::Hash; // Default
+    let mut path_start_idx = 2;
+
+    if args.len() > 3 && args[2].to_string() == "--format" {
+        let format_str = args[3].to_string();
+        format = match format_str.to_lowercase().as_str() {
+            "hash" => index::IndexFormat::Hash,
+            "json" => index::IndexFormat::Json,
+            _ => return Err(RedisError::String(format!(
+                "Invalid format '{}'. Must be 'hash' or 'json'", format_str
+            ))),
+        };
+        path_start_idx = 4;
+    }
+
+    // Remaining args are paths
+    if args.len() <= path_start_idx {
+        return Err(RedisError::String("At least one path is required".to_string()));
+    }
+
+    let paths: Vec<String> = args[path_start_idx..].iter().map(|s| s.to_string()).collect();
+
+    let config = index::IndexConfig::new_with_format(pattern, paths, format);
+    config.save(ctx)?;
+
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_index_enable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 2 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let pattern = args[1].to_string();
+
+    // Load existing config or create new one
+    let mut config = IndexConfig::load(ctx, &pattern)?.unwrap_or_else(|| {
+        IndexConfig::new(pattern.clone(), Vec::new())
+    });
+
+    config.enabled = true;
+    config.save(ctx)?;
+
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_index_disable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 2 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let pattern = args[1].to_string();
+
+    // Load existing config
+    if let Some(mut config) = IndexConfig::load(ctx, &pattern)? {
+        config.enabled = false;
+        config.save(ctx)?;
+    }
+
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_index_reindex(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 2 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let key_name = &args[1];
+
+    let key = ctx.open_key(key_name);
+    let client = key
+        .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
+        .ok_or(RedisError::Str("no such key"))?;
+
+    // Update the search index
+    let updated = index::update_search_index(ctx, &key_name.to_string(), client)
+        .map_err(|e| RedisError::String(e.to_string()))?;
+
+    // Return 1 if index was updated, 0 if not (e.g., no matching config or no fields)
+    Ok(RedisValue::Integer(if updated { 1 } else { 0 }))
+}
+
+fn am_index_status(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // Get pattern from args, or default to "*"
+    let pattern = if args.len() > 1 {
+        args[1].to_string()
+    } else {
+        "*".to_string()
+    };
+
+    // Get all config keys matching the pattern
+    let search_pattern = format!("am:index:config:{}", pattern);
+    let keys_result = ctx.call("KEYS", &[&ctx.create_string(search_pattern)])?;
+
+    let config_keys: Vec<RedisString> = match keys_result {
+        RedisValue::Array(keys) => keys
+            .into_iter()
+            .filter_map(|v| match v {
+                RedisValue::BulkString(s) => Some(ctx.create_string(s)),
+                RedisValue::SimpleString(s) => Some(ctx.create_string(s)),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+
+    let mut result = Vec::new();
+
+    for config_key in config_keys {
+        let config_key_str = config_key.to_string();
+        if let Some(key_pattern) = config_key_str.strip_prefix("am:index:config:") {
+            if let Ok(Some(config)) = IndexConfig::load(ctx, key_pattern) {
+                result.push(RedisValue::BulkString(format!(
+                    "pattern: {}",
+                    config.pattern
+                )));
+                result.push(RedisValue::BulkString(format!(
+                    "enabled: {}",
+                    config.enabled
+                )));
+                result.push(RedisValue::BulkString(format!(
+                    "paths: {}",
+                    config.paths.join(", ")
+                )));
+                result.push(RedisValue::SimpleStringStatic("---"));
+            }
+        }
+    }
+
+    if result.is_empty() {
+        Ok(RedisValue::SimpleString(
+            "No index configurations found".to_string(),
+        ))
+    } else {
+        Ok(RedisValue::Array(result))
+    }
+}
+
 #[cfg(not(test))]
 redis_module! {
     name: "automerge",
@@ -1266,6 +1453,11 @@ redis_module! {
         ["am.appendbool", am_appendbool, "write deny-oom", 1, 1, 1],
         ["am.listlen", am_listlen, "readonly", 1, 1, 1],
         ["am.maplen", am_maplen, "readonly", 1, 1, 1],
+        ["am.index.configure", am_index_configure, "write", 0, 0, 0],
+        ["am.index.enable", am_index_enable, "write", 0, 0, 0],
+        ["am.index.disable", am_index_disable, "write", 0, 0, 0],
+        ["am.index.reindex", am_index_reindex, "write", 1, 1, 1],
+        ["am.index.status", am_index_status, "readonly", 0, 0, 0],
     ],
 }
 
