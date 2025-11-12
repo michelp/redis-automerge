@@ -30,9 +30,14 @@ jobs:
       - name: Run integration tests
         run: docker compose run --rm test
 
+      - name: Run Python tests
+        run: docker compose run --rm test-python
+
       - name: Show test logs on failure
         if: failure()
-        run: docker compose logs test
+        run: |
+          docker compose logs test
+          docker compose logs test-python
 
       - name: Clean up
         if: always()
