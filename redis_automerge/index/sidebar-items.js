@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["IndexFormat"],"fn":["build_json_document","delete_search_index","extract_indexed_fields","get_index_key","update_json_index","update_search_index"],"struct":["IndexConfig"]};

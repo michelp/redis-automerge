@@ -1,0 +1,35 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Extension trait and implementation for integrating Automerge CRDT with Redis."><title>redis_automerge::ext - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../../" data-static-root-path="../../static.files/" data-current-crate="redis_automerge" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.1 (ed61e7d7e 2025-11-07)" data-channel="1.91.1" data-search-js="search-e256b49e.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../../static.files/storage-e2aeef58.js"></script><script defer src="../sidebar-items.js"></script><script defer src="../../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../../static.files/favicon-044be391.svg"></head><body class="rustdoc mod"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Module ext</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../../redis_automerge/index.html">redis_<wbr>automerge</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><section id="rustdoc-toc"><h2 class="location"><a href="#">Module ext</a></h2><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#path-syntax" title="Path Syntax">Path Syntax</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#structs">Module Items</a></h3><ul class="block"><li><a href="#structs" title="Structs">Structs</a></li><li><a href="#enums" title="Enums">Enums</a></li><li><a href="#traits" title="Traits">Traits</a></li></ul></section><div id="rustdoc-modnav"><h2 class="in-crate"><a href="../index.html">In crate redis_<wbr>automerge</a></h2></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><div class="rustdoc-breadcrumbs"><a href="../index.html">redis_automerge</a></div><h1>Module <span>ext</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../../src/redis_automerge/ext.rs.html#1-2922">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Extension trait and implementation for integrating Automerge CRDT with Redis.</p>
+<p>This module provides the core functionality for managing Automerge documents
+within Redis, including:</p>
+<ul>
+<li>JSON-like path operations with support for nested maps and arrays</li>
+<li>Type-safe operations for text, integers, doubles, and booleans</li>
+<li>List/array manipulation with append operations</li>
+<li>Persistence and change tracking for Redis RDB and AOF</li>
+</ul>
+<h2 id="path-syntax"><a class="doc-anchor" href="#path-syntax">§</a>Path Syntax</h2>
+<p>The module supports RedisJSON-compatible path syntax:</p>
+<ul>
+<li>Simple keys: <code>"name"</code>, <code>"user"</code></li>
+<li>Nested maps: <code>"user.profile.name"</code>, <code>"data.config.port"</code></li>
+<li>Array indices: <code>"users[0]"</code>, <code>"items[5].name"</code></li>
+<li>JSONPath style: <code>"$.user.name"</code>, <code>"$.items[0].title"</code></li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2>
+<div class="example-wrap"><pre class="rust rust-example-rendered"><code><span class="kw">use </span>redis_automerge::ext::RedisAutomergeClient;
+
+<span class="kw">let </span><span class="kw-2">mut </span>client = RedisAutomergeClient::new();
+
+<span class="comment">// Set nested values
+</span>client.put_text(<span class="string">"user.name"</span>, <span class="string">"Alice"</span>).unwrap();
+client.put_int(<span class="string">"user.age"</span>, <span class="number">30</span>).unwrap();
+
+<span class="comment">// Create and populate a list
+</span>client.create_list(<span class="string">"items"</span>).unwrap();
+client.append_text(<span class="string">"items"</span>, <span class="string">"first"</span>).unwrap();
+client.append_text(<span class="string">"items"</span>, <span class="string">"second"</span>).unwrap();
+
+<span class="comment">// Access list elements
+</span><span class="kw">let </span>value = client.get_text(<span class="string">"items[0]"</span>).unwrap();
+<span class="macro">assert_eq!</span>(value, <span class="prelude-val">Some</span>(<span class="string">"first"</span>.to_string()));</code></pre></div></div></details><h2 id="structs" class="section-header">Structs<a href="#structs" class="anchor">§</a></h2><dl class="item-table"><dt><a class="struct" href="struct.RedisAutomergeClient.html" title="struct redis_automerge::ext::RedisAutomergeClient">Redis<wbr>Automerge<wbr>Client</a></dt><dd>Client for managing an Automerge CRDT document with Redis-specific features.</dd></dl><h2 id="enums" class="section-header">Enums<a href="#enums" class="anchor">§</a></h2><dl class="item-table"><dt><a class="enum" href="enum.TypedValue.html" title="enum redis_automerge::ext::TypedValue">Typed<wbr>Value</a></dt><dd>Represents a typed value extracted from an Automerge document
+This is used for building JSON index documents with proper types</dd></dl><h2 id="traits" class="section-header">Traits<a href="#traits" class="anchor">§</a></h2><dl class="item-table"><dt><a class="trait" href="trait.RedisAutomergeExt.html" title="trait redis_automerge::ext::RedisAutomergeExt">Redis<wbr>Automerge<wbr>Ext</a></dt><dd>Convenience methods for integrating Automerge with Redis persistence layers.</dd></dl></section></div></main></body></html>

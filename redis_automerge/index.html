@@ -1,0 +1,73 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="generator" content="rustdoc"><meta name="description" content="Redis module for Automerge CRDT documents."><title>redis_automerge - Rust</title><script>if(window.location.protocol!=="file:")document.head.insertAdjacentHTML("beforeend","SourceSerif4-Regular-6b053e98.ttf.woff2,FiraSans-Italic-81dc35de.woff2,FiraSans-Regular-0fe48ade.woff2,FiraSans-MediumItalic-ccf7e434.woff2,FiraSans-Medium-e1aa3f0a.woff2,SourceCodePro-Regular-8badfe75.ttf.woff2,SourceCodePro-Semibold-aa29a496.ttf.woff2".split(",").map(f=>`<link rel="preload" as="font" type="font/woff2"href="../static.files/${f}">`).join(""))</script><link rel="stylesheet" href="../static.files/normalize-9960930a.css"><link rel="stylesheet" href="../static.files/rustdoc-e56847b5.css"><meta name="rustdoc-vars" data-root-path="../" data-static-root-path="../static.files/" data-current-crate="redis_automerge" data-themes="" data-resource-suffix="" data-rustdoc-version="1.91.1 (ed61e7d7e 2025-11-07)" data-channel="1.91.1" data-search-js="search-e256b49e.js" data-stringdex-js="stringdex-c3e638e9.js" data-settings-js="settings-c38705f0.js" ><script src="../static.files/storage-e2aeef58.js"></script><script defer src="../crates.js"></script><script defer src="../static.files/main-6dc2a7f3.js"></script><noscript><link rel="stylesheet" href="../static.files/noscript-263c88ec.css"></noscript><link rel="alternate icon" type="image/png" href="../static.files/favicon-32x32-eab170b8.png"><link rel="icon" type="image/svg+xml" href="../static.files/favicon-044be391.svg"></head><body class="rustdoc mod crate"><!--[if lte IE 11]><div class="warning">This old browser is unsupported and will most likely display funky things.</div><![endif]--><rustdoc-topbar><h2><a href="#">Crate redis_automerge</a></h2></rustdoc-topbar><nav class="sidebar"><div class="sidebar-crate"><h2><a href="../redis_automerge/index.html">redis_<wbr>automerge</a><span class="version">0.1.0</span></h2></div><div class="sidebar-elems"><ul class="block"><li><a id="all-types" href="all.html">All Items</a></li></ul><section id="rustdoc-toc"><h3><a href="#">Sections</a></h3><ul class="block top-toc"><li><a href="#redis-commands" title="Redis Commands">Redis Commands</a><ul><li><a href="#document-management" title="Document Management">Document Management</a></li><li><a href="#value-operations" title="Value Operations">Value Operations</a></li><li><a href="#list-operations" title="List Operations">List Operations</a></li></ul></li><li><a href="#path-syntax" title="Path Syntax">Path Syntax</a></li><li><a href="#examples" title="Examples">Examples</a></li></ul><h3><a href="#modules">Crate Items</a></h3><ul class="block"><li><a href="#modules" title="Modules">Modules</a></li><li><a href="#functions" title="Functions">Functions</a></li></ul></section><div id="rustdoc-modnav"></div></div></nav><div class="sidebar-resizer" title="Drag to resize sidebar"></div><main><div class="width-limiter"><section id="main-content" class="content"><div class="main-heading"><h1>Crate <span>redis_<wbr>automerge</span>&nbsp;<button id="copy-path" title="Copy item path to clipboard">Copy item path</button></h1><rustdoc-toolbar></rustdoc-toolbar><span class="sub-heading"><a class="src" href="../src/redis_automerge/lib.rs.html#1-2631">Source</a> </span></div><details class="toggle top-doc" open><summary class="hideme"><span>Expand description</span></summary><div class="docblock"><p>Redis module for Automerge CRDT documents.</p>
+<p>This module integrates <a href="https://automerge.org/">Automerge</a> conflict-free replicated data types (CRDTs)
+into Redis, providing:</p>
+<ul>
+<li>JSON-like document storage with automatic conflict resolution</li>
+<li>Path-based access similar to RedisJSON</li>
+<li>Support for nested maps and arrays</li>
+<li>Persistent storage via RDB and AOF</li>
+</ul>
+<h2 id="redis-commands"><a class="doc-anchor" href="#redis-commands">§</a>Redis Commands</h2><h3 id="document-management"><a class="doc-anchor" href="#document-management">§</a>Document Management</h3>
+<ul>
+<li><code>AM.NEW &lt;key&gt;</code> - Create a new empty Automerge document</li>
+<li><code>AM.LOAD &lt;key&gt; &lt;bytes&gt;</code> - Load a document from binary format</li>
+<li><code>AM.SAVE &lt;key&gt;</code> - Save a document to binary format</li>
+<li><code>AM.APPLY &lt;key&gt; &lt;change&gt;...</code> - Apply Automerge changes to a document</li>
+<li><code>AM.CHANGES &lt;key&gt; [&lt;hash&gt;...]</code> - Get changes not in the provided hash list (empty = all changes)</li>
+<li><code>AM.NUMCHANGES &lt;key&gt; [&lt;hash&gt;...]</code> - Get count of changes not in the provided hash list (empty = all changes)</li>
+<li><code>AM.GETDIFF &lt;key&gt; BEFORE &lt;hash&gt;... AFTER &lt;hash&gt;...</code> - Get diff between two document states</li>
+<li><code>AM.TOJSON &lt;key&gt; [pretty]</code> - Export document to JSON format</li>
+<li><code>AM.FROMJSON &lt;key&gt; &lt;json&gt;</code> - Create document from JSON format</li>
+</ul>
+<h3 id="value-operations"><a class="doc-anchor" href="#value-operations">§</a>Value Operations</h3>
+<ul>
+<li><code>AM.PUTTEXT &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Set a text value</li>
+<li><code>AM.GETTEXT &lt;key&gt; &lt;path&gt;</code> - Get a text value</li>
+<li><code>AM.PUTDIFF &lt;key&gt; &lt;path&gt; &lt;diff&gt;</code> - Apply a unified diff to update text efficiently</li>
+<li><code>AM.SPLICETEXT &lt;key&gt; &lt;path&gt; &lt;pos&gt; &lt;del&gt; &lt;text&gt;</code> - Splice text at position (insert/delete/replace)</li>
+<li><code>AM.PUTINT &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Set an integer value</li>
+<li><code>AM.GETINT &lt;key&gt; &lt;path&gt;</code> - Get an integer value</li>
+<li><code>AM.PUTDOUBLE &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Set a double value</li>
+<li><code>AM.GETDOUBLE &lt;key&gt; &lt;path&gt;</code> - Get a double value</li>
+<li><code>AM.PUTBOOL &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Set a boolean value</li>
+<li><code>AM.GETBOOL &lt;key&gt; &lt;path&gt;</code> - Get a boolean value</li>
+</ul>
+<h3 id="list-operations"><a class="doc-anchor" href="#list-operations">§</a>List Operations</h3>
+<ul>
+<li><code>AM.CREATELIST &lt;key&gt; &lt;path&gt;</code> - Create a new list</li>
+<li><code>AM.APPENDTEXT &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Append text to a list</li>
+<li><code>AM.APPENDINT &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Append integer to a list</li>
+<li><code>AM.APPENDDOUBLE &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Append double to a list</li>
+<li><code>AM.APPENDBOOL &lt;key&gt; &lt;path&gt; &lt;value&gt;</code> - Append boolean to a list</li>
+<li><code>AM.LISTLEN &lt;key&gt; &lt;path&gt;</code> - Get the length of a list</li>
+<li><code>AM.MAPLEN &lt;key&gt; &lt;path&gt;</code> - Get the number of keys in a map</li>
+</ul>
+<h2 id="path-syntax"><a class="doc-anchor" href="#path-syntax">§</a>Path Syntax</h2>
+<p>Paths support RedisJSON-compatible syntax:</p>
+<ul>
+<li>Simple keys: <code>name</code>, <code>config</code></li>
+<li>Nested maps: <code>user.profile.name</code>, <code>data.settings.port</code></li>
+<li>Array indices: <code>users[0]</code>, <code>items[5].name</code></li>
+<li>JSONPath style: <code>$.user.name</code>, <code>$.items[0].title</code></li>
+</ul>
+<h2 id="examples"><a class="doc-anchor" href="#examples">§</a>Examples</h2><div class="example-wrap"><pre class="language-redis"><code># Create a new document
+AM.NEW mydoc
+
+# Set nested values
+AM.PUTTEXT mydoc user.name &quot;Alice&quot;
+AM.PUTINT mydoc user.age 30
+
+# Get values
+AM.GETTEXT mydoc user.name
+# Returns: &quot;Alice&quot;
+
+# Create and populate a list
+AM.CREATELIST mydoc tags
+AM.APPENDTEXT mydoc tags &quot;redis&quot;
+AM.APPENDTEXT mydoc tags &quot;crdt&quot;
+AM.GETTEXT mydoc tags[0]
+# Returns: &quot;redis&quot;
+
+# Save and reload
+AM.SAVE mydoc
+# Returns: &lt;binary data&gt;</code></pre></div></div></details><h2 id="modules" class="section-header">Modules<a href="#modules" class="anchor">§</a></h2><dl class="item-table"><dt><a class="mod" href="ext/index.html" title="mod redis_automerge::ext">ext</a></dt><dd>Extension trait and implementation for integrating Automerge CRDT with Redis.</dd><dt><a class="mod" href="index/index.html" title="mod redis_automerge::index">index</a></dt></dl><h2 id="functions" class="section-header">Functions<a href="#functions" class="anchor">§</a></h2><dl class="item-table"><dt><a class="fn" href="fn.RedisModule_OnLoad.html" title="fn redis_automerge::RedisModule_OnLoad">Redis<wbr>Module_<wbr>OnLoad</a><sup title="unsafe function">⚠</sup></dt><dt><a class="fn" href="fn.RedisModule_OnUnload.html" title="fn redis_automerge::RedisModule_OnUnload">Redis<wbr>Module_<wbr>OnUnload</a></dt></dl></section></div></main></body></html>
