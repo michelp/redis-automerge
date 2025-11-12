@@ -31,5 +31,17 @@ services:
       WEBDIS_HOST: webdis
       WEBDIS_PORT: 7379
 
+  test-python:
+    build:
+      context: ./scripts/tests/python
+      dockerfile: Dockerfile
+    depends_on:
+      - redis
+    volumes:
+      - ./scripts/tests/python:/tests
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+
 volumes:
   redis-data:
