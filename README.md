@@ -796,6 +796,45 @@ Or use `AM.CHANGES` for differential sync:
 2. Apply changes in order
 3. Subscribe for future updates
 
+### ⚠️ Pub/Sub Disclosure Surface
+
+The change-notification channel is **readable by every client with `PSUBSCRIBE`
+permission**. By default that includes any unauthenticated client (and, in the
+`docker-compose.yml` deployment, anyone who can reach webdis on port 7379).
+Running `PSUBSCRIBE changes:*` reconstructs every document mutation in real
+time. Treat the change channel as a public broadcast — never as a private
+side-channel.
+
+Two operator-side mitigations are supported:
+
+**1. Configure a non-default channel prefix.** The module accepts a
+`change-channel-prefix` argument at module-load time. Operators can set an
+unguessable prefix and ACL-restrict it:
+
+```bash
+# Default: changes:{key}
+--loadmodule /path/to/redis-automerge.so
+
+# Custom prefix: sync.tenantA:{key}
+--loadmodule /path/to/redis-automerge.so change-channel-prefix=sync.tenantA:
+
+# Disable change publishing entirely (sync clients will not receive updates):
+--loadmodule /path/to/redis-automerge.so change-channel-prefix=
+```
+
+**2. Restrict subscribers via Redis ACLs.** Even with the default prefix,
+operators should grant pub/sub read access only to authorized sync clients:
+
+```redis
+# Deny all clients except sync_user from subscribing to change channels
+ACL SETUSER default resetchannels &* -psubscribe -subscribe
+ACL SETUSER sync_user on >secret resetchannels &changes:* +psubscribe +subscribe
+```
+
+The combination — unguessable prefix plus explicit ACL allowlist — is the
+recommended posture for any deployment that exposes Redis to untrusted
+network clients.
+
 ## Path Syntax
 
 The module supports RedisJSON-compatible path syntax:

@@ -22,6 +22,9 @@ RUN cargo build --release --manifest-path redis-automerge/Cargo.toml
 # Runtime image with Redis and the compiled module
 FROM redis:7
 COPY --from=builder /build/redis-automerge/target/release/libredis_automerge.so /usr/lib/redis/modules/redis-automerge.so
+# NOTE: keep this flag list in sync with the `command:` override on the `redis`
+# service in docker-compose.yml, which re-applies the same flags plus
+# `--enable-debug-command yes` for the local/test stack.
 CMD ["redis-server", \
      "--loadmodule", "/usr/lib/redis/modules/redis-automerge.so", \
      "--loglevel", "notice", \
@@ -34,5 +37,4 @@ CMD ["redis-server", \
      "--appendonly", "yes", \
      "--appendfilename", "appendonly.aof", \
      "--appendfsync", "everysec", \
-     "--aof-use-rdb-preamble", "no", \
-     "--enable-debug-command", "yes"]
+     "--aof-use-rdb-preamble", "no"]

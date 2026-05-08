@@ -4,15 +4,126 @@
 ///! to Redis Hashes or RedisJSON documents that can be indexed by RediSearch.
 
 use crate::ext::{RedisAutomergeClient, TypedValue};
-use redis_module::{Context, RedisError, RedisResult, RedisString, RedisValue};
+use redis_module::{Context, RedisError, RedisResult, RedisValue};
 use serde_json::{Map, Value as JsonValue};
 use std::collections::HashMap;
+use std::sync::RwLock;
 
 /// Prefix for index configuration keys
 const INDEX_CONFIG_PREFIX: &str = "am:index:config:";
 
 /// Prefix for shadow Hash keys
 const INDEX_KEY_PREFIX: &str = "am:idx:";
+
+/// Process-global cache of `IndexConfig` entries keyed by pattern.
+///
+/// `None` means the cache has not been populated yet. The first read after a
+/// cold start (or after invalidation) calls [`populate_cache`] which performs
+/// a single `SCAN` over `am:index:config:*`. Subsequent reads are O(K) over
+/// the number of configured patterns rather than O(N) over the keyspace.
+///
+/// Invalidated by every write through `AM.INDEX.CONFIGURE`, `AM.INDEX.ENABLE`,
+/// and `AM.INDEX.DISABLE`. Direct user manipulation of `am:index:config:*`
+/// keys (e.g. via raw `HSET`) is not detected; restart Redis to re-read.
+static CONFIG_CACHE: RwLock<Option<HashMap<String, IndexConfig>>> = RwLock::new(None);
+
+/// Populate the cache from Redis using a non-blocking `SCAN` cursor loop.
+fn populate_cache(ctx: &Context) -> RedisResult<HashMap<String, IndexConfig>> {
+    let mut map: HashMap<String, IndexConfig> = HashMap::new();
+    let scan_match = format!("{}*", INDEX_CONFIG_PREFIX);
+    let mut cursor: String = "0".to_string();
+
+    loop {
+        let result = ctx.call(
+            "SCAN",
+            &[
+                &ctx.create_string(cursor.as_str()),
+                &ctx.create_string("MATCH"),
+                &ctx.create_string(scan_match.as_str()),
+                &ctx.create_string("COUNT"),
+                &ctx.create_string("100"),
+            ],
+        )?;
+
+        let (next_cursor, keys) = match result {
+            RedisValue::Array(items) if items.len() == 2 => {
+                let mut iter = items.into_iter();
+                let cursor_val = iter.next().unwrap();
+                let keys_val = iter.next().unwrap();
+                let next_cursor = match cursor_val {
+                    RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
+                    _ => return Err(RedisError::Str("unexpected SCAN cursor type")),
+                };
+                let keys = match keys_val {
+                    RedisValue::Array(k) => k,
+                    _ => return Err(RedisError::Str("unexpected SCAN keys type")),
+                };
+                (next_cursor, keys)
+            }
+            _ => return Err(RedisError::Str("unexpected SCAN response shape")),
+        };
+
+        for key_val in keys {
+            let key_str = match key_val {
+                RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
+                _ => continue,
+            };
+            if let Some(pattern) = key_str.strip_prefix(INDEX_CONFIG_PREFIX) {
+                if let Ok(Some(cfg)) = IndexConfig::load(ctx, pattern) {
+                    map.insert(pattern.to_string(), cfg);
+                }
+            }
+        }
+
+        if next_cursor == "0" {
+            break;
+        }
+        cursor = next_cursor;
+    }
+
+    Ok(map)
+}
+
+/// Ensure the cache is populated; no-op if already initialized.
+fn ensure_cache(ctx: &Context) -> RedisResult<()> {
+    {
+        let guard = CONFIG_CACHE
+            .read()
+            .map_err(|_| RedisError::Str("index config cache poisoned"))?;
+        if guard.is_some() {
+            return Ok(());
+        }
+    }
+    let map = populate_cache(ctx)?;
+    let mut guard = CONFIG_CACHE
+        .write()
+        .map_err(|_| RedisError::Str("index config cache poisoned"))?;
+    if guard.is_none() {
+        *guard = Some(map);
+    }
+    Ok(())
+}
+
+/// Drop the cache so the next read re-populates from Redis. Called after every
+/// `AM.INDEX.*` write so subsequent lookups see fresh state.
+pub fn invalidate_cache() {
+    if let Ok(mut guard) = CONFIG_CACHE.write() {
+        *guard = None;
+    }
+}
+
+/// Return a snapshot of every cached `IndexConfig`. Used by `AM.INDEX.STATUS`
+/// instead of a `KEYS` scan.
+pub fn list_configs(ctx: &Context) -> RedisResult<Vec<IndexConfig>> {
+    ensure_cache(ctx)?;
+    let guard = CONFIG_CACHE
+        .read()
+        .map_err(|_| RedisError::Str("index config cache poisoned"))?;
+    Ok(guard
+        .as_ref()
+        .map(|m| m.values().cloned().collect())
+        .unwrap_or_default())
+}
 
 /// Format for shadow index documents
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,40 +271,30 @@ impl IndexConfig {
         }))
     }
 
-    /// Find the configuration that matches a given key
+    /// Find the configuration that matches a given key.
+    ///
+    /// Backed by the process-global [`CONFIG_CACHE`]. The first call after a
+    /// cold start triggers a single `SCAN` over `am:index:config:*`; every
+    /// subsequent call is an in-memory lookup over the configured patterns.
     pub fn find_matching_config(ctx: &Context, key: &str) -> RedisResult<Option<Self>> {
-        // Get all configuration keys
-        let pattern = format!("{}*", INDEX_CONFIG_PREFIX);
-        let result = ctx.call("KEYS", &[&ctx.create_string(pattern)])?;
-
-        // Handle the Array result
-        let config_keys: Vec<RedisString> = match result {
-            RedisValue::Array(keys) => keys
-                .into_iter()
-                .filter_map(|v| match v {
-                    RedisValue::BulkString(s) => Some(ctx.create_string(s)),
-                    RedisValue::SimpleString(s) => Some(ctx.create_string(s)),
-                    _ => None,
-                })
-                .collect(),
-            _ => return Ok(None),
+        ensure_cache(ctx)?;
+        let guard = CONFIG_CACHE
+            .read()
+            .map_err(|_| RedisError::Str("index config cache poisoned"))?;
+        let map = match guard.as_ref() {
+            Some(m) => m,
+            None => return Ok(None),
         };
-
-        // Check each configuration to see if its pattern matches the key
-        for config_key in config_keys {
-            let config_key_str = config_key.to_string();
-            if let Some(pattern) = config_key_str.strip_prefix(INDEX_CONFIG_PREFIX) {
-                if Self::matches_pattern(key, pattern) {
-                    return Self::load(ctx, pattern);
-                }
+        for (pattern, cfg) in map.iter() {
+            if Self::matches_pattern(key, pattern) {
+                return Ok(Some(cfg.clone()));
             }
         }
-
         Ok(None)
     }
 
     /// Check if a key matches a pattern (supports * wildcard)
-    fn matches_pattern(key: &str, pattern: &str) -> bool {
+    pub(crate) fn matches_pattern(key: &str, pattern: &str) -> bool {
         // Simple wildcard matching (* matches any characters)
         if pattern == "*" {
             return true;

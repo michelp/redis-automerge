@@ -79,6 +79,7 @@ pub mod ext;
 pub mod index;
 
 use std::os::raw::{c_char, c_int, c_void};
+use std::sync::OnceLock;
 
 use automerge::{Change, ChangeHash};
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
@@ -90,6 +91,27 @@ use redis_module::{
     raw::{self, Status},
     Context, NextArg, RedisError, RedisResult, RedisString, RedisValue,
 };
+
+/// Maximum bytes accepted by `AM.LOAD` and per-change in `AM.APPLY`.
+/// Caps DoS via huge serialized payloads. See SECURITY_AUDIT.md #3.
+const MAX_LOAD_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
+/// Maximum number of changes accepted in a single `AM.APPLY` call.
+/// Caps DoS via massive change-vector arguments. See SECURITY_AUDIT.md #3.
+const MAX_APPLY_CHANGES: usize = 1024;
+
+/// Maximum bytes accepted by `AM.FROMJSON`. See SECURITY_AUDIT.md #3.
+const MAX_JSON_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
+
+/// Default channel-name prefix used when `PUBLISH`ing change bytes for
+/// real-time sync. Operators concerned about pub/sub eavesdropping (any
+/// `PSUBSCRIBE changes:*` subscriber sees every write) can override this via
+/// the `change-channel-prefix=...` module-load argument; setting an empty
+/// value disables publishing entirely. See SECURITY_AUDIT.md #5.
+const DEFAULT_CHANNEL_PREFIX: &str = "changes:";
+
+/// Resolved channel prefix for this module load. `None` until [`init`] runs.
+static CHANGE_CHANNEL_PREFIX: OnceLock<String> = OnceLock::new();
 
 static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
     "amdoc-rs1",
@@ -117,7 +139,35 @@ static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
     },
 );
 
-fn init(ctx: &Context, _args: &Vec<RedisString>) -> Status {
+fn init(ctx: &Context, args: &Vec<RedisString>) -> Status {
+    // Parse module-load arguments. Each arg is `key=value`. Currently the
+    // only recognized key is `change-channel-prefix`; unknown keys cause
+    // module load to fail so typos do not silently default.
+    let mut prefix: Option<String> = None;
+    for arg in args {
+        let s = match arg.try_as_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ctx.log_warning("module argument is not valid UTF-8");
+                return Status::Err;
+            }
+        };
+        if let Some(value) = s.strip_prefix("change-channel-prefix=") {
+            prefix = Some(value.to_string());
+        } else {
+            ctx.log_warning(&format!("unknown module argument: {}", s));
+            return Status::Err;
+        }
+    }
+    let resolved = prefix.unwrap_or_else(|| DEFAULT_CHANNEL_PREFIX.to_string());
+    if resolved.is_empty() {
+        ctx.log_warning(
+            "change publishing disabled (change-channel-prefix is empty); \
+             clients relying on changes:* pub/sub will not receive updates",
+        );
+    }
+    let _ = CHANGE_CHANNEL_PREFIX.set(resolved);
+
     REDIS_AUTOMERGE_TYPE
         .create_data_type(ctx.ctx)
         .map(|_| Status::Ok)
@@ -136,10 +186,15 @@ fn parse_utf8_value(s: &RedisString) -> Result<&str, RedisError> {
         .map_err(|_| RedisError::Str("value must be utf-8"))
 }
 
-/// Helper function to publish Automerge change bytes to the changes:{key} Redis pub/sub channel.
+/// Helper function to publish Automerge change bytes to the configured Redis
+/// pub/sub channel. The channel name is `<prefix><key>` where `<prefix>` is
+/// the value of `change-channel-prefix` module-load arg (default `changes:`).
 ///
-/// Takes the change bytes from a write operation and publishes them as base64-encoded
-/// data to allow subscribers to receive and apply the changes in real-time.
+/// Setting an empty prefix at module load disables publishing entirely; this
+/// function then becomes a no-op. See SECURITY_AUDIT.md #5 for the rationale.
+///
+/// Takes the change bytes from a write operation and publishes them as
+/// base64-encoded data so that binary content survives pub/sub framing.
 ///
 /// # Arguments
 ///
@@ -158,7 +213,15 @@ fn publish_change(
     change_bytes: Option<Vec<u8>>,
 ) -> RedisResult {
     if let Some(change) = change_bytes {
-        let channel_name = format!("changes:{}", key_name.try_as_str()?);
+        let prefix = CHANGE_CHANNEL_PREFIX
+            .get()
+            .map(|s| s.as_str())
+            .unwrap_or(DEFAULT_CHANNEL_PREFIX);
+        if prefix.is_empty() {
+            // Publishing disabled by operator configuration.
+            return Ok(RedisValue::SimpleStringStatic("OK"));
+        }
+        let channel_name = format!("{}{}", prefix, key_name.try_as_str()?);
         // Base64 encode binary change data to avoid null byte issues
         use base64::{engine::general_purpose, Engine as _};
         let encoded_change = general_purpose::STANDARD.encode(&change);
@@ -174,6 +237,12 @@ fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let mut args = args.into_iter().skip(1);
     let key_name = args.next_arg()?;
     let data = args.next_arg()?;
+    if data.as_slice().len() > MAX_LOAD_BYTES {
+        return Err(RedisError::String(format!(
+            "AM.LOAD payload exceeds {} byte limit",
+            MAX_LOAD_BYTES
+        )));
+    }
     let client = RedisAutomergeClient::load(data.as_slice())
         .map_err(|e| RedisError::String(e.to_string()))?;
 
@@ -975,6 +1044,14 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
     let key_name = &args[1];
 
+    let change_args = &args[2..];
+    if change_args.len() > MAX_APPLY_CHANGES {
+        return Err(RedisError::String(format!(
+            "AM.APPLY accepts at most {} changes per call",
+            MAX_APPLY_CHANGES
+        )));
+    }
+
     // Parse and apply changes, then publish each one to subscribers
     {
         let key = ctx.open_key_writable(key_name);
@@ -982,8 +1059,14 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE)?
             .ok_or(RedisError::Str("no such key"))?;
         let mut changes = Vec::new();
-        for change_str in &args[2..] {
+        for change_str in change_args {
             let bytes = change_str.to_vec();
+            if bytes.len() > MAX_LOAD_BYTES {
+                return Err(RedisError::String(format!(
+                    "AM.APPLY change exceeds {} byte limit",
+                    MAX_LOAD_BYTES
+                )));
+            }
             let change = Change::from_bytes(bytes)
                 .map_err(|e| RedisError::String(format!("invalid change: {}", e)))?;
             changes.push(change);
@@ -1171,6 +1254,12 @@ fn am_fromjson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
     let key_name = &args[1];
     let json = parse_utf8_value(&args[2])?;
+    if json.len() > MAX_JSON_BYTES {
+        return Err(RedisError::String(format!(
+            "AM.FROMJSON payload exceeds {} byte limit",
+            MAX_JSON_BYTES
+        )));
+    }
 
     // Create new document from JSON
     let client = RedisAutomergeClient::from_json(json)
@@ -1297,6 +1386,7 @@ fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 
     let config = index::IndexConfig::new_with_format(pattern, paths, format);
     config.save(ctx)?;
+    index::invalidate_cache();
 
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
@@ -1315,6 +1405,7 @@ fn am_index_enable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 
     config.enabled = true;
     config.save(ctx)?;
+    index::invalidate_cache();
 
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
@@ -1330,9 +1421,27 @@ fn am_index_disable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     if let Some(mut config) = IndexConfig::load(ctx, &pattern)? {
         config.enabled = false;
         config.save(ctx)?;
+        index::invalidate_cache();
     }
 
     Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
+fn am_index_delete(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    if args.len() != 2 {
+        return Err(RedisError::WrongArity);
+    }
+
+    let pattern = args[1].to_string();
+    let config_key = format!("am:index:config:{}", pattern);
+    let removed = ctx.call("DEL", &[&ctx.create_string(config_key)])?;
+    index::invalidate_cache();
+
+    // Pass through Redis' integer reply (0 if no such config, 1 if removed).
+    match removed {
+        RedisValue::Integer(n) => Ok(RedisValue::Integer(n)),
+        _ => Ok(RedisValue::Integer(0)),
+    }
 }
 
 fn am_index_reindex(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -1356,50 +1465,35 @@ fn am_index_reindex(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_index_status(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    // Get pattern from args, or default to "*"
-    let pattern = if args.len() > 1 {
+    // Optional filter pattern. `*` (default) matches every cached config; any
+    // other value is treated as an exact pattern match against the stored
+    // config patterns.
+    let filter = if args.len() > 1 {
         args[1].to_string()
     } else {
         "*".to_string()
     };
 
-    // Get all config keys matching the pattern
-    let search_pattern = format!("am:index:config:{}", pattern);
-    let keys_result = ctx.call("KEYS", &[&ctx.create_string(search_pattern)])?;
-
-    let config_keys: Vec<RedisString> = match keys_result {
-        RedisValue::Array(keys) => keys
-            .into_iter()
-            .filter_map(|v| match v {
-                RedisValue::BulkString(s) => Some(ctx.create_string(s)),
-                RedisValue::SimpleString(s) => Some(ctx.create_string(s)),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+    let configs = index::list_configs(ctx)?;
 
     let mut result = Vec::new();
-
-    for config_key in config_keys {
-        let config_key_str = config_key.to_string();
-        if let Some(key_pattern) = config_key_str.strip_prefix("am:index:config:") {
-            if let Ok(Some(config)) = IndexConfig::load(ctx, key_pattern) {
-                result.push(RedisValue::BulkString(format!(
-                    "pattern: {}",
-                    config.pattern
-                )));
-                result.push(RedisValue::BulkString(format!(
-                    "enabled: {}",
-                    config.enabled
-                )));
-                result.push(RedisValue::BulkString(format!(
-                    "paths: {}",
-                    config.paths.join(", ")
-                )));
-                result.push(RedisValue::SimpleStringStatic("---"));
-            }
+    for config in configs {
+        if !IndexConfig::matches_pattern(&config.pattern, &filter) {
+            continue;
         }
+        result.push(RedisValue::BulkString(format!(
+            "pattern: {}",
+            config.pattern
+        )));
+        result.push(RedisValue::BulkString(format!(
+            "enabled: {}",
+            config.enabled
+        )));
+        result.push(RedisValue::BulkString(format!(
+            "paths: {}",
+            config.paths.join(", ")
+        )));
+        result.push(RedisValue::SimpleStringStatic("---"));
     }
 
     if result.is_empty() {
@@ -1456,6 +1550,7 @@ redis_module! {
         ["am.index.configure", am_index_configure, "write", 0, 0, 0],
         ["am.index.enable", am_index_enable, "write", 0, 0, 0],
         ["am.index.disable", am_index_disable, "write", 0, 0, 0],
+        ["am.index.delete", am_index_delete, "write", 0, 0, 0],
         ["am.index.reindex", am_index_reindex, "write", 1, 1, 1],
         ["am.index.status", am_index_status, "readonly", 0, 0, 0],
     ],

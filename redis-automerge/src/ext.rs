@@ -44,6 +44,11 @@ use automerge::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as JsonValue;
 
+/// Maximum JSON nesting depth accepted by `from_json` / `AM.FROMJSON`.
+/// Defense in depth against stack-overflow DoS via deeply nested input.
+/// See SECURITY_AUDIT.md #4.
+pub const MAX_JSON_DEPTH: usize = 256;
+
 /// Represents a diff operation parsed from unified diff format
 #[derive(Debug, PartialEq)]
 enum DiffOp {
@@ -2388,7 +2393,15 @@ impl RedisAutomergeClient {
             parent: &ObjId,
             key_or_index: KeyOrIndex,
             value: &JsonValue,
+            depth: usize,
         ) -> Result<(), AutomergeError> {
+            // Defense in depth against stack overflow from deeply nested JSON.
+            // serde_json caps parse-time recursion at 128 by default, but we
+            // enforce our own limit on the walker so future serde_json
+            // configuration changes cannot reach unbounded recursion here.
+            if depth > MAX_JSON_DEPTH {
+                return Err(AutomergeError::Fail);
+            }
             match value {
                 JsonValue::Object(map) => {
                     // Create a Map object
@@ -2402,7 +2415,7 @@ impl RedisAutomergeClient {
                     };
                     // Recursively populate the map
                     for (k, v) in map {
-                        populate_from_json(tx, &obj_id, KeyOrIndex::Key(k.clone()), v)?;
+                        populate_from_json(tx, &obj_id, KeyOrIndex::Key(k.clone()), v, depth + 1)?;
                     }
                 }
                 JsonValue::Array(arr) => {
@@ -2417,7 +2430,7 @@ impl RedisAutomergeClient {
                     };
                     // Append elements to the list
                     for (i, v) in arr.iter().enumerate() {
-                        populate_from_json(tx, &obj_id, KeyOrIndex::Index(i), v)?;
+                        populate_from_json(tx, &obj_id, KeyOrIndex::Index(i), v, depth + 1)?;
                     }
                 }
                 JsonValue::String(s) => {
@@ -2485,7 +2498,7 @@ impl RedisAutomergeClient {
         // Start populating from root
         if let JsonValue::Object(map) = &json_value {
             for (k, v) in map {
-                populate_from_json(&mut tx, &ROOT, KeyOrIndex::Key(k.clone()), v)?;
+                populate_from_json(&mut tx, &ROOT, KeyOrIndex::Key(k.clone()), v, 1)?;
             }
         } else {
             // If root is not an object, we can't convert it directly

@@ -6,6 +6,39 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+    # The published Docker image (Dockerfile CMD) does NOT enable DEBUG, so end
+    # users get a safe default. This local/test stack re-enables it because the
+    # AOF persistence tests use `DEBUG RESTART` (see scripts/tests/lib/common.sh).
+    # Keep this flag list in sync with the Dockerfile CMD; only the trailing
+    # `--enable-debug-command yes` should differ.
+    command:
+      - redis-server
+      - --loadmodule
+      - /usr/lib/redis/modules/redis-automerge.so
+      - --loglevel
+      - notice
+      - --logfile
+      - ""
+      - --slowlog-log-slower-than
+      - "0"
+      - --slowlog-max-len
+      - "128"
+      - --notify-keyspace-events
+      - KEA
+      - --dir
+      - /data
+      - --save
+      - ""
+      - --appendonly
+      - "yes"
+      - --appendfilename
+      - appendonly.aof
+      - --appendfsync
+      - everysec
+      - --aof-use-rdb-preamble
+      - "no"
+      - --enable-debug-command
+      - "yes"
 
   webdis:
     image: nicolas/webdis:latest

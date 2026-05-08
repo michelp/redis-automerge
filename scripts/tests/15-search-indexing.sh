@@ -177,8 +177,9 @@ echo "   ✓ Wildcard pattern (*) matches all keys"
 
 # Test 13: Empty fields not indexed
 echo "Test 13: Empty fields not indexed..."
-# Clean up wildcard config from previous test
-redis-cli -h "$HOST" del "am:index:config:*" > /dev/null
+# Clean up wildcard config from previous test using AM.INDEX.DELETE so the
+# in-memory config cache is invalidated alongside the underlying Redis Hash.
+redis-cli -h "$HOST" am.index.delete "*" > /dev/null
 redis-cli -h "$HOST" del "article:999" > /dev/null
 redis-cli -h "$HOST" am.new "article:999" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:999" title "Only Title" > /dev/null
