@@ -192,7 +192,7 @@ build redis` succeeds and all 17 integration test suites pass
 (`docker compose run --build --rm test`). The `clang` apt package is still
 installed because `redis-module`'s build script uses bindgen.
 
-### 7. `webdis` exposes unauthenticated HTTP access to Redis
+### 7. `webdis` exposes unauthenticated HTTP access to Redis  ✅ RESOLVED 2026-05-09
 
 **File:** `docker-compose.yml:14-15`
 
@@ -210,6 +210,29 @@ unauthenticated port.
 `ports`), put webdis behind an authenticating reverse proxy, or document
 prominently that the compose file is for local development only and that
 production users must add auth.
+
+**Resolution (2026-05-09):** Added a committed `webdis.json` and mounted it
+over the image's stock `/etc/webdis.prod.json` from `docker-compose.yml`.
+The bundled config enforces a deny-list ACL at the HTTP layer that blocks
+the highest-impact commands without ever reaching Redis: `DEBUG` (audit #1),
+`KEYS` (audit #2), `CONFIG`, `SHUTDOWN`, `FLUSHDB`, `FLUSHALL`,
+`REPLICAOF`, `SLAVEOF`, `MIGRATE`, `MODULE`, `CLUSTER`, `EVAL`, `EVALSHA`,
+`SCRIPT`, `FUNCTION`, `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `LASTSAVE`,
+`MONITOR`, `CLIENT`. Each returns HTTP 403 Forbidden. Verified end-to-end:
+`curl http://localhost:7379/DEBUG/SLEEP/0` → 403, `curl
+http://localhost:7379/KEYS/*` → 403, `curl
+http://localhost:7379/AM.NEW/testdoc` → 200; all 17 integration test
+suites still pass.
+
+HTTP Basic auth is **off** by default to keep the README demo flow
+zero-friction (none of the test scripts use webdis). The README's new
+"Webdis Authentication" section documents the disclosure surface, shows
+how to flip Basic auth on by adding `http_basic_auth` to `webdis.json`,
+and walks operators through stronger postures (`expose:` instead of
+`ports:`, plus an authenticating sidecar like Caddy/nginx/Traefik for
+TLS termination). Findings #1, #2, #5 attack vectors via webdis are
+therefore neutralized at the HTTP edge regardless of whether the operator
+takes the further step of enabling Basic auth.
 
 ---
 

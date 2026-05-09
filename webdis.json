@@ -1,0 +1,42 @@
+{
+    "redis_host":   "redis",
+    "redis_port":   6379,
+
+    "http_host":    "0.0.0.0",
+    "http_port":    7379,
+
+    "threads":      4,
+    "pool_size":    8,
+
+    "verbosity":    5,
+
+    "websockets":   true,
+
+    "acl": [
+        {
+            "disabled": [
+                "DEBUG",
+                "KEYS",
+                "CONFIG",
+                "SHUTDOWN",
+                "FLUSHDB",
+                "FLUSHALL",
+                "REPLICAOF",
+                "SLAVEOF",
+                "MIGRATE",
+                "MODULE",
+                "CLUSTER",
+                "EVAL",
+                "EVALSHA",
+                "SCRIPT",
+                "FUNCTION",
+                "SAVE",
+                "BGSAVE",
+                "BGREWRITEAOF",
+                "LASTSAVE",
+                "MONITOR",
+                "CLIENT"
+            ]
+        }
+    ]
+}

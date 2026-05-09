@@ -46,8 +46,13 @@ services:
       - redis
     ports:
       - "7379:7379"
-    environment:
-      REDIS_HOST: redis
+    # Mount the project's webdis.json over the image's stock config. The
+    # bundled config blocks dangerous commands (DEBUG, KEYS, CONFIG,
+    # SHUTDOWN, scripting, persistence ops, etc) via a deny-list ACL.
+    # HTTP Basic auth is OFF by default. See README.md "Webdis
+    # Authentication" for the production posture.
+    volumes:
+      - ./webdis.json:/etc/webdis.prod.json:ro
     restart: unless-stopped
 
   test:

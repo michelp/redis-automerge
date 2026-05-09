@@ -835,6 +835,56 @@ The combination — unguessable prefix plus explicit ACL allowlist — is the
 recommended posture for any deployment that exposes Redis to untrusted
 network clients.
 
+### ⚠️ Webdis Authentication
+
+The `webdis` service in `docker-compose.yml` is the **sole network ingress**
+of the stack as shipped — the `redis` service itself uses `expose: 6379`
+(internal only), so every external client reaches Redis through webdis on
+port 7379. The bundled `webdis.json` ships with HTTP Basic auth **off** so
+that the README demo flow works out of the box, but enforces a deny-list
+ACL that blocks the most dangerous commands at the HTTP layer regardless
+of authentication:
+
+| Bucket | Commands denied |
+| ------ | --------------- |
+| Debug  | `DEBUG` |
+| Scan   | `KEYS` |
+| Server admin | `CONFIG`, `SHUTDOWN`, `FLUSHDB`, `FLUSHALL`, `REPLICAOF`, `SLAVEOF`, `MIGRATE`, `MODULE`, `CLUSTER` |
+| Scripting | `EVAL`, `EVALSHA`, `SCRIPT`, `FUNCTION` |
+| Persistence | `SAVE`, `BGSAVE`, `BGREWRITEAOF`, `LASTSAVE` |
+| Monitoring | `MONITOR`, `CLIENT` |
+
+These return HTTP `403 Forbidden` from webdis without ever reaching Redis.
+All `AM.*` commands plus `PING`, `SUBSCRIBE`, `PSUBSCRIBE`, `GET`, `SET`,
+and the rest of the Redis surface remain enabled.
+
+**For any deployment exposed to untrusted network clients, enable Basic
+auth.** Add an `http_basic_auth` field to `webdis.json`:
+
+```json
+{
+    "http_basic_auth": "myuser:a-strong-password",
+    "redis_host": "redis",
+    ...
+}
+```
+
+…then restart the webdis container. Browser clients pass credentials in
+the URL (`https://myuser:a-strong-password@host/PING`) or via an
+`Authorization: Basic ...` header. The `acl` block can be extended to
+require auth on a per-command basis (see the
+[webdis docs](https://github.com/nicolasff/webdis#acl)).
+
+**Stronger postures:**
+
+- **No host port at all.** If you don't need browser/WebSocket access,
+  change `ports: ["7379:7379"]` to `expose: ["7379"]` in
+  `docker-compose.yml`. Webdis is then only reachable from other compose
+  services (e.g. an authenticating reverse proxy you add).
+- **TLS termination.** Webdis itself does not serve TLS; put it behind a
+  Caddy / nginx / Traefik sidecar in any deployment that crosses an
+  untrusted network.
+
 ## Path Syntax
 
 The module supports RedisJSON-compatible path syntax:
