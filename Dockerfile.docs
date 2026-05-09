@@ -1,0 +1,16 @@
+# Build rustdoc for the redis-automerge module against the published
+# `automerge` crate from crates.io. Used by both the `build-docs` and
+# `check-docs` jobs in .github/workflows/docs.yml.
+FROM rust:1
+
+# `redis-module`'s build script uses bindgen, which requires libclang.
+RUN apt-get update && apt-get install -y clang && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+COPY redis-automerge/ ./redis-automerge/
+
+# Build documentation and capture warnings/errors to a file the workflow
+# extracts via `docker cp`.
+RUN cargo doc --no-deps --manifest-path redis-automerge/Cargo.toml \
+    2>&1 | tee /build/doc-output.txt

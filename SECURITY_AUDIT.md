@@ -153,7 +153,7 @@ custom prefix `sync.tenantA:` the messages flow to that channel and not to
 `changes:*`. The disclosure surface, the new arg, and a Redis ACL example
 are documented in `README.md` under "Pub/Sub Disclosure Surface".
 
-### 6. Automerge version mismatch between Cargo.toml and Dockerfile
+### 6. Automerge version mismatch between Cargo.toml and Dockerfile  ✅ RESOLVED 2026-05-08
 
 **Files:** `Cargo.toml:10`, `Dockerfile:10-17`, `.github/workflows/docs.yml:35-42`
 
@@ -178,6 +178,20 @@ workspace, or use a git dependency directly in `Cargo.toml` so the source of
 truth is clear and `cargo build` and `docker compose build` produce the same
 artifact.
 
+**Resolution (2026-05-08):** The js-aligned monorepo dependency was dropped
+in favor of the latest published Rust crate. `Cargo.toml` now declares
+`automerge = "0.9.0"` (the current stable release on crates.io; the
+`1.0.0-beta.x` line was experimental and never reached `beta.6` upstream).
+The `git clone --branch js/automerge-3.1.2 ...` and `sed`-rewrite in the
+`Dockerfile` were removed; the build stage now resolves `automerge` from
+crates.io like every other dependency. `cargo build` locally and
+`docker compose build` therefore compile against the same source tree.
+The 0.9.0 → existing-code API surface was source-compatible — no changes
+to `lib.rs` or `ext.rs` were required. Verified end-to-end: `docker compose
+build redis` succeeds and all 17 integration test suites pass
+(`docker compose run --build --rm test`). The `clang` apt package is still
+installed because `redis-module`'s build script uses bindgen.
+
 ### 7. `webdis` exposes unauthenticated HTTP access to Redis
 
 **File:** `docker-compose.yml:14-15`
@@ -201,7 +215,7 @@ production users must add auth.
 
 ## MEDIUM Severity
 
-### 8. `Cargo.lock` is gitignored — non-reproducible builds
+### 8. `Cargo.lock` is gitignored — non-reproducible builds  ✅ RESOLVED 2026-05-08
 
 **File:** `redis-automerge/.gitignore:2`
 
@@ -211,6 +225,12 @@ machines/times may pull different transitive dependency versions.
 
 **Recommendation:** Remove `Cargo.lock` from `redis-automerge/.gitignore` and
 commit the lock file.
+
+**Resolution (2026-05-08):** `Cargo.lock` removed from
+`redis-automerge/.gitignore` and the lockfile resolved by the in-container
+build is committed at `redis-automerge/Cargo.lock`. Pairs naturally with
+finding #6 — now that the source of truth is `Cargo.toml` + crates.io, the
+lockfile pins the exact transitive dependency tree across all builders.
 
 ### 9. Unbounded AOF buffer growth
 
@@ -518,7 +538,7 @@ incorrectly: `["a,b"]` saves and reloads as `["a", "b"]`.
 **Recommendation:** Persist paths as a JSON array or a Redis list
 (`RPUSH/LRANGE`) instead of CSV.
 
-### 30. `docs.yml` workflow duplicates the build Dockerfile inline
+### 30. `docs.yml` workflow duplicates the build Dockerfile inline  ✅ RESOLVED 2026-05-08
 
 **File:** `.github/workflows/docs.yml:25-50, 90-110`
 
@@ -530,6 +550,18 @@ finding #6 (the same `sed`-patch fragility appears here twice more).
 
 **Recommendation:** Commit a single `Dockerfile.docs` and reference it from
 both jobs.
+
+**Resolution (2026-05-08):** A single committed `Dockerfile.docs` at the
+repo root replaces both inline heredocs. Both `build-docs` and `check-docs`
+jobs now `docker build -f Dockerfile.docs -t ...` instead of regenerating
+the Dockerfile each run. The `sed`-patching from finding #6 is gone from
+this file too — `Dockerfile.docs` simply copies `redis-automerge/` and
+runs `cargo doc --no-deps`. Verified locally with
+`docker build -f Dockerfile.docs -t redis-automerge-docs-local .`
+(rustdoc emits 10 pre-existing non-blocking warnings; the workflow's
+warning-grep step is unchanged). Also added `**/target/` to `.dockerignore`
+so the docs build does not race with a stale `redis-automerge/target/`
+directory left over from local cargo runs.
 
 ### 31. `mcp-server/` is an empty `0700` directory committed to the tree
 

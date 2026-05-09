@@ -1,20 +1,14 @@
-# Build Redis module with Automerge 3.1.2 from source
+# Build Redis module against the published `automerge` crate from crates.io.
 FROM rust:1 AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y clang git && rm -rf /var/lib/apt/lists/*
+# `redis-module`'s build script uses bindgen, which requires libclang.
+RUN apt-get update && apt-get install -y clang && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Clone Automerge 3.1.2 from GitHub
-RUN git clone --depth 1 --branch js/automerge-3.1.2 https://github.com/automerge/automerge.git /build/automerge-src
-
-# Copy our redis-automerge module code
+# Copy our redis-automerge module code (Cargo.toml + Cargo.lock pin the
+# exact dependency tree so this build is reproducible).
 COPY redis-automerge/ ./redis-automerge/
-
-# Update Cargo.toml to use automerge from the cloned git repo
-RUN cd redis-automerge && \
-    sed -i 's|automerge = ".*"|automerge = { path = "/build/automerge-src/rust/automerge" }|' Cargo.toml
 
 # Build the Redis module
 RUN cargo build --release --manifest-path redis-automerge/Cargo.toml
