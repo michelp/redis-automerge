@@ -193,26 +193,20 @@ content=$(redis-cli -h "$HOST" hget "am:idx:article:999" content)
 assert_equals "$content" ""
 echo "   ✓ Empty configured fields not indexed"
 
-# Test 14: Index created when loading document
-echo "Test 14: Index created when loading document..."
+# Test 14: AM.LOAD triggers automatic indexing (audit #11 fix)
+echo "Test 14: AM.LOAD triggers automatic indexing..."
 redis-cli -h "$HOST" del "article:loaded" > /dev/null
-# Create a document, save it, then load it to trigger indexing
+# Create a document, save it, then load it
 redis-cli -h "$HOST" am.new "article:temp" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:temp" title "Loaded Article" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:temp" content "Loaded Content" > /dev/null
-# Save and load
 redis-cli -h "$HOST" --raw am.save "article:temp" > /tmp/article-test.bin
 truncate -s -1 /tmp/article-test.bin
 redis-cli -h "$HOST" --raw -x am.load "article:loaded" < /tmp/article-test.bin > /dev/null
 redis-cli -h "$HOST" del "article:temp" > /dev/null
-# Check that loaded document's index was created
-exists=$(redis-cli -h "$HOST" exists "am:idx:article:loaded")
-# AM.LOAD doesn't automatically trigger indexing (intentional design choice)
-# So we expect 0 here and manually reindex
-assert_equals "$exists" "0"
-# Manually reindex
-redis-cli -h "$HOST" am.index.reindex "article:loaded" > /dev/null
-# Now check that index exists
+# AM.LOAD now centralizes through finalize_write_meta, which updates the
+# search shadow index. The shadow Hash should exist immediately after LOAD
+# without a separate AM.INDEX.REINDEX call.
 exists=$(redis-cli -h "$HOST" exists "am:idx:article:loaded")
 assert_equals "$exists" "1"
 title=$(redis-cli -h "$HOST" --raw hget "am:idx:article:loaded" title)
@@ -220,7 +214,7 @@ content=$(redis-cli -h "$HOST" --raw hget "am:idx:article:loaded" content)
 assert_equals "$title" "Loaded Article"
 assert_equals "$content" "Loaded Content"
 rm -f /tmp/article-test.bin
-echo "   ✓ Manual reindexing after load works"
+echo "   ✓ AM.LOAD automatically populates shadow index"
 
 # Test 15: Multiple pattern configurations
 echo "Test 15: Multiple pattern configurations..."
@@ -241,6 +235,39 @@ redis-cli -h "$HOST" am.puttext "article:123" title "Still Works" > /dev/null
 title=$(redis-cli -h "$HOST" --raw hget "am:idx:article:123" title)
 assert_equals "$title" "Still Works"
 echo "   ✓ Multiple patterns can coexist"
+
+# Test 15b: Audit #11 regression — non-PUTTEXT writes that mutate indexed
+# text fields must trigger the shadow-index update. Before the audit-#11 fix,
+# only AM.PUTTEXT / AM.APPLY / AM.FROMJSON updated the shadow Hash; other
+# commands silently desynced it. The Hash indexer only stores text fields, so
+# this test mutates text via SPLICETEXT and PUTDIFF (which previously did not
+# trigger indexing) and asserts the shadow Hash reflects the new content.
+echo "Test 15b: Text mutations via non-PUTTEXT commands update the index..."
+redis-cli -h "$HOST" am.index.configure "audit11:*" body > /dev/null
+redis-cli -h "$HOST" del "audit11:doc" > /dev/null
+redis-cli -h "$HOST" am.new "audit11:doc" > /dev/null
+redis-cli -h "$HOST" am.puttext "audit11:doc" body "hello world" > /dev/null
+v=$(redis-cli -h "$HOST" --raw hget "am:idx:audit11:doc" body)
+assert_equals "$v" "hello world"
+
+# AM.SPLICETEXT — replace "world" with "audit": pos=6 del=5 insert="audit"
+redis-cli -h "$HOST" am.splicetext "audit11:doc" body 6 5 "audit" > /dev/null
+v=$(redis-cli -h "$HOST" --raw hget "am:idx:audit11:doc" body)
+assert_equals "$v" "hello audit"
+
+# AM.PUTDIFF — apply a unified diff that overwrites the text
+diff_payload=$'--- a\n+++ b\n@@ -1 +1 @@\n-hello audit\n+hello diff\n'
+redis-cli -h "$HOST" am.putdiff "audit11:doc" body "$diff_payload" > /dev/null
+v=$(redis-cli -h "$HOST" --raw hget "am:idx:audit11:doc" body)
+assert_equals "$v" "hello diff"
+
+# AM.MARKCREATE — adding a mark doesn't change the text content but must
+# still leave the indexed value intact (shadow not corrupted by the trigger).
+redis-cli -h "$HOST" am.markcreate "audit11:doc" body bold true 0 5 > /dev/null
+v=$(redis-cli -h "$HOST" --raw hget "am:idx:audit11:doc" body)
+assert_equals "$v" "hello diff"
+
+echo "   ✓ SPLICETEXT/PUTDIFF/MARKCREATE keep the shadow index in sync"
 
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."

@@ -275,7 +275,7 @@ fails, the operator has no indication of why data was lost.
 **Recommendation:** Add `ctx.log_warning()` calls (or the FFI equivalent) in
 error paths of all unsafe functions.
 
-### 11. Search index not updated for all write commands
+### 11. Search index not updated for all write commands  ✅ RESOLVED 2026-05-09
 
 **File:** `lib.rs:248, 1010, 1192` (and missing from every other write)
 
@@ -294,6 +294,39 @@ and security concern, not cleanup.
 **Recommendation:** Centralize index updates so every write path that mutates
 indexed paths invokes `try_update_search_index`. Alternatively, debounce
 updates on a separate event so you do not pay the cost on every PUT.
+
+**Resolution (2026-05-09):** Took the centralization path. Two new helpers
+in `lib.rs` — `finalize_write` and `finalize_write_meta` — consolidate the
+publish-change + replicate + keyspace-notify + search-index-update sequence
+that every AM.* write must perform. All write command handlers now end with
+a single tail call to one of those helpers (`finalize_write` for the common
+"single change captured" case; `finalize_write_meta` for AM.APPLY which
+publishes per-change in a batch loop, and for AM.LOAD / AM.NEW / AM.FROMJSON
+which install whole documents). The previously-omitted commands —
+`AM.PUTINT`, `AM.PUTDOUBLE`, `AM.PUTBOOL`, `AM.PUTCOUNTER`, `AM.INCCOUNTER`,
+`AM.PUTTIMESTAMP`, `AM.PUTDIFF`, `AM.SPLICETEXT`, `AM.MARKCREATE`,
+`AM.MARKCLEAR`, `AM.CREATELIST`, `AM.APPEND{TEXT,INT,DOUBLE,BOOL}` — and
+`AM.LOAD` / `AM.NEW` now all keep the shadow index in sync. As a side
+effect, ~80 lines of per-command boilerplate collapsed into single-line
+tail calls, so the next new write command will inherit indexing for free
+rather than having to remember the pattern.
+
+A regression test (`scripts/tests/15-search-indexing.sh` Test 15b)
+exercises the original bug: it indexes a `body` text field, then mutates
+it via `AM.SPLICETEXT`, `AM.PUTDIFF`, and `AM.MARKCREATE` — none of which
+triggered indexing before — and asserts the shadow Hash reflects the new
+content after each mutation.
+
+`AM.LOAD`'s previous "no automatic indexing" behavior changed; the
+existing Test 14 was updated from "manually reindex after load" to "load
+auto-populates the shadow index." Operators no longer need a follow-up
+`AM.INDEX.REINDEX` after `AM.LOAD`.
+
+The debounce alternative was considered and rejected: with the
+`find_matching_config` cache from finding #2's resolution, per-write
+indexing cost is bounded by `O(K)` config lookups plus one DEL+HSET batch
+for matching documents — small enough that deferred-update infrastructure
+isn't justified. All 17 integration test suites pass.
 
 ### 12. Index-admin commands declared with `0,0,0` first/last/step keys
 

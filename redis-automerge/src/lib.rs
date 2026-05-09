@@ -235,10 +235,57 @@ fn publish_change(
     Ok(RedisValue::SimpleStringStatic("OK"))
 }
 
+/// Centralized post-write finalization for AM.* write commands.
+///
+/// Performs, in order:
+/// 1. Publishes `change_bytes` to the configured changes channel (no-op if
+///    `None` or if publishing is disabled by operator config).
+/// 2. Replicates the command to AOF / replicas.
+/// 3. Emits the keyspace notification.
+/// 4. Updates the search shadow index (best-effort; logs on failure).
+///
+/// Every write command must funnel through this helper (or
+/// `finalize_write_meta` for batch-publishing commands like AM.APPLY).
+/// Skipping it leaves the search shadow index stale, which silently
+/// desynchronizes RediSearch results from the source-of-truth document
+/// (audit #11).
+fn finalize_write(
+    ctx: &Context,
+    cmd: &'static str,
+    key_name: &RedisString,
+    change_bytes: Option<Vec<u8>>,
+    args: &[RedisString],
+) -> RedisResult {
+    publish_change(ctx, key_name, change_bytes)?;
+    finalize_write_meta(ctx, cmd, key_name, args)
+}
+
+/// `finalize_write` minus the publish step. Use this from commands that
+/// publish their own changes (e.g., AM.APPLY emits one PUBLISH per change
+/// in the batch) or that install a fresh document with no incremental
+/// change to publish (AM.LOAD, AM.FROMJSON, AM.NEW).
+fn finalize_write_meta(
+    ctx: &Context,
+    cmd: &'static str,
+    key_name: &RedisString,
+    args: &[RedisString],
+) -> RedisResult {
+    let refs: Vec<&RedisString> = args[1..].iter().collect();
+    ctx.replicate(cmd, &refs[..]);
+    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, cmd, key_name);
+    let key = ctx.open_key(key_name);
+    if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
+        try_update_search_index(ctx, &key_name.to_string(), client);
+    }
+    Ok(RedisValue::SimpleStringStatic("OK"))
+}
+
 fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    let mut args = args.into_iter().skip(1);
-    let key_name = args.next_arg()?;
-    let data = args.next_arg()?;
+    if args.len() != 3 {
+        return Err(RedisError::WrongArity);
+    }
+    let key_name = &args[1];
+    let data = &args[2];
     if data.as_slice().len() > MAX_LOAD_BYTES {
         return Err(RedisError::String(format!(
             "AM.LOAD payload exceeds {} byte limit",
@@ -248,15 +295,12 @@ fn am_load(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let client = RedisAutomergeClient::load(data.as_slice())
         .map_err(|e| RedisError::String(e.to_string()))?;
 
-    // Set value and close key before calling replicate
     {
-        let key = ctx.open_key_writable(&key_name);
+        let key = ctx.open_key_writable(key_name);
         key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
-    } // key is dropped here
+    }
 
-    ctx.replicate("am.load", &[&key_name, &data]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.load", &key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write_meta(ctx, "am.load", key_name, &args)
 }
 
 fn am_new(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -265,15 +309,12 @@ fn am_new(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
     let key_name = &args[1];
 
-    // Create document and close key before calling replicate
     {
         let key = ctx.open_key_writable(key_name);
         key.set_value(&REDIS_AUTOMERGE_TYPE, RedisAutomergeClient::new())?;
-    } // key is dropped here
+    }
 
-    ctx.replicate("am.new", &[key_name]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.new", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write_meta(ctx, "am.new", key_name, &args)
 }
 
 fn am_save(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -305,22 +346,7 @@ fn am_puttext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.puttext", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttext", key_name);
-
-    // Update search index
-    {
-        let key = ctx.open_key(key_name);
-        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
-            try_update_search_index(ctx, &key_name.to_string(), client);
-        }
-    }
-
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.puttext", key_name, change_bytes, &args)
 }
 
 fn am_gettext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -361,13 +387,7 @@ fn am_putdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.putdiff", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdiff", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.putdiff", key_name, change_bytes, &args)
 }
 
 fn am_splicetext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -399,13 +419,7 @@ fn am_splicetext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.splicetext", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.splicetext", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.splicetext", key_name, change_bytes, &args)
 }
 
 fn am_markcreate(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -467,12 +481,7 @@ fn am_markcreate(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     };
 
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.markcreate", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.markcreate", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.markcreate", key_name, change_bytes, &args)
 }
 
 fn am_markclear(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -519,12 +528,7 @@ fn am_markclear(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     };
 
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.markclear", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.markclear", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.markclear", key_name, change_bytes, &args)
 }
 
 fn am_marks(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -593,13 +597,7 @@ fn am_putint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.putint", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putint", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.putint", key_name, change_bytes, &args)
 }
 
 fn am_getint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -642,13 +640,7 @@ fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.putdouble", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putdouble", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.putdouble", key_name, change_bytes, &args)
 }
 
 fn am_getdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -694,13 +686,7 @@ fn am_putbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.putbool", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putbool", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.putbool", key_name, change_bytes, &args)
 }
 
 fn am_getbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -743,13 +729,7 @@ fn am_putcounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.putcounter", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.putcounter", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.putcounter", key_name, change_bytes, &args)
 }
 
 fn am_getcounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -792,13 +772,7 @@ fn am_inccounter(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.inccounter", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.inccounter", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.inccounter", key_name, change_bytes, &args)
 }
 
 fn am_puttimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -822,13 +796,7 @@ fn am_puttimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.puttimestamp", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.puttimestamp", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.puttimestamp", key_name, change_bytes, &args)
 }
 
 fn am_gettimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -868,13 +836,7 @@ fn am_createlist(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.createlist", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.createlist", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.createlist", key_name, change_bytes, &args)
 }
 
 fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -896,13 +858,7 @@ fn am_appendtext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.appendtext", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendtext", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.appendtext", key_name, change_bytes, &args)
 }
 
 fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -926,13 +882,7 @@ fn am_appendint(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.appendint", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendint", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.appendint", key_name, change_bytes, &args)
 }
 
 fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -956,17 +906,7 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.appenddouble", &refs[..]);
-    ctx.notify_keyspace_event(
-        redis_module::NotifyEvent::MODULE,
-        "am.appenddouble",
-        key_name,
-    );
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.appenddouble", key_name, change_bytes, &args)
 }
 
 fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -993,13 +933,7 @@ fn am_appendbool(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             .map_err(|e| RedisError::String(e.to_string()))?
     }; // key is dropped here
 
-    // Publish change to subscribers if one was generated
-    publish_change(ctx, key_name, change_bytes)?;
-
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.appendbool", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.appendbool", key_name);
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write(ctx, "am.appendbool", key_name, change_bytes, &args)
 }
 
 fn am_listlen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -1084,19 +1018,7 @@ fn am_apply(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         publish_change(ctx, key_name, Some(change_bytes))?;
     }
 
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.apply", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.apply", key_name);
-
-    // Update search index
-    {
-        let key = ctx.open_key(key_name);
-        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
-            try_update_search_index(ctx, &key_name.to_string(), client);
-        }
-    }
-
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write_meta(ctx, "am.apply", key_name, &args)
 }
 
 fn am_changes(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -1267,24 +1189,12 @@ fn am_fromjson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let client = RedisAutomergeClient::from_json(json)
         .map_err(|e| RedisError::String(e.to_string()))?;
 
-    // Store the document at the key
-    let key = ctx.open_key_writable(key_name);
-    key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
-
-    // Replicate and notify
-    let refs: Vec<&RedisString> = args[1..].iter().collect();
-    ctx.replicate("am.fromjson", &refs[..]);
-    ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, "am.fromjson", key_name);
-
-    // Update search index
     {
-        let key = ctx.open_key(key_name);
-        if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
-            try_update_search_index(ctx, &key_name.to_string(), client);
-        }
+        let key = ctx.open_key_writable(key_name);
+        key.set_value(&REDIS_AUTOMERGE_TYPE, client)?;
     }
 
-    Ok(RedisValue::SimpleStringStatic("OK"))
+    finalize_write_meta(ctx, "am.fromjson", key_name, &args)
 }
 
 /// # Safety
