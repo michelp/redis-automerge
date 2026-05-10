@@ -461,28 +461,32 @@ fn am_splicetext(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_markcreate(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    // AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]
-    if args.len() < 7 || args.len() > 8 {
+    // AM.MARKCREATE <key> <path> <name> <type> <value> <start> <end> [expand]
+    // <type> is one of `string`, `int`, `double`, `bool`. The explicit type
+    // argument replaces the previous auto-detect (audit #16): a value of
+    // "true", "123", or "NaN" was silently coerced to bool/int/non-finite-f64.
+    if args.len() < 8 || args.len() > 9 {
         return Err(RedisError::WrongArity);
     }
     let key_name = &args[1];
     let path = parse_utf8_field(&args[2], "path")?;
     let mark_name = parse_utf8_field(&args[3], "name")?;
-    let value_str = parse_utf8_value(&args[4])?;
-    let start: usize = args[5]
+    let value_type = parse_utf8_value(&args[4])?;
+    let value_str = parse_utf8_value(&args[5])?;
+    let start: usize = args[6]
         .parse_integer()
         .map_err(|_| RedisError::Str("start must be a non-negative integer"))?
         .try_into()
         .map_err(|_| RedisError::Str("start must be a non-negative integer"))?;
-    let end: usize = args[6]
+    let end: usize = args[7]
         .parse_integer()
         .map_err(|_| RedisError::Str("end must be a non-negative integer"))?
         .try_into()
         .map_err(|_| RedisError::Str("end must be a non-negative integer"))?;
 
     // Parse expand parameter (default to None)
-    let expand = if args.len() == 8 {
-        let expand_str = parse_utf8_value(&args[7])?;
+    let expand = if args.len() == 9 {
+        let expand_str = parse_utf8_value(&args[8])?;
         match expand_str.to_lowercase().as_str() {
             "before" => automerge::marks::ExpandMark::Before,
             "after" => automerge::marks::ExpandMark::After,
@@ -494,18 +498,36 @@ fn am_markcreate(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         automerge::marks::ExpandMark::None
     };
 
-    // Parse the value - try to detect type
     use automerge::ScalarValue;
-    let value = if value_str == "true" {
-        ScalarValue::Boolean(true)
-    } else if value_str == "false" {
-        ScalarValue::Boolean(false)
-    } else if let Ok(i) = value_str.parse::<i64>() {
-        ScalarValue::Int(i)
-    } else if let Ok(f) = value_str.parse::<f64>() {
-        ScalarValue::F64(f)
-    } else {
-        ScalarValue::Str(value_str.into())
+    let value = match value_type.to_lowercase().as_str() {
+        "string" => ScalarValue::Str(value_str.into()),
+        "int" => ScalarValue::Int(
+            value_str
+                .parse::<i64>()
+                .map_err(|_| RedisError::Str("int value must be a valid integer"))?,
+        ),
+        "double" => {
+            let f: f64 = value_str
+                .parse()
+                .map_err(|_| RedisError::Str("double value must be a valid double"))?;
+            // Audit #15: keep the marks path consistent with PUTDOUBLE.
+            if !f.is_finite() {
+                return Err(RedisError::Str(
+                    "double value must be finite (NaN/Infinity rejected)",
+                ));
+            }
+            ScalarValue::F64(f)
+        }
+        "bool" => match value_str.to_lowercase().as_str() {
+            "true" | "1" => ScalarValue::Boolean(true),
+            "false" | "0" => ScalarValue::Boolean(false),
+            _ => return Err(RedisError::Str("bool value must be true/false or 1/0")),
+        },
+        _ => {
+            return Err(RedisError::Str(
+                "type must be 'string', 'int', 'double', or 'bool'",
+            ))
+        }
     };
 
     // Capture change bytes
@@ -666,6 +688,11 @@ fn am_putdouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: f64 = parse_utf8_value(&args[3])?
         .parse()
         .map_err(|_| RedisError::Str("value must be a valid double"))?;
+    if !value.is_finite() {
+        return Err(RedisError::Str(
+            "value must be a finite double (NaN/Infinity rejected)",
+        ));
+    }
 
     // Capture change bytes before calling ctx.call
     let change_bytes = {
@@ -822,6 +849,15 @@ fn am_puttimestamp(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: i64 = args[3]
         .parse_integer()
         .map_err(|_| RedisError::Str("value must be an integer (Unix timestamp in milliseconds)"))?;
+    // Audit #14: reject values chrono cannot represent. Otherwise AM.TOJSON
+    // would silently render them as 1970-01-01 epoch (the unwrap_or path in
+    // ext.rs::value_to_json), losing the original on round-trip.
+    if chrono::DateTime::from_timestamp_millis(value).is_none() {
+        return Err(RedisError::String(format!(
+            "timestamp {} ms is outside the representable range",
+            value
+        )));
+    }
 
     // Capture change bytes before calling ctx.call
     let change_bytes = {
@@ -932,6 +968,11 @@ fn am_appenddouble(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let value: f64 = parse_utf8_value(&args[3])?
         .parse()
         .map_err(|_| RedisError::Str("value must be a valid double"))?;
+    if !value.is_finite() {
+        return Err(RedisError::Str(
+            "value must be a finite double (NaN/Infinity rejected)",
+        ));
+    }
 
     // Capture change bytes before calling ctx.call
     let change_bytes = {

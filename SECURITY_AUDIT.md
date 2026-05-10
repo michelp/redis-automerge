@@ -452,7 +452,7 @@ stale until an operator clears them. This is documented as the safe
 default — the alternative (silently overwriting) is exactly what the
 audit asked us to stop doing.
 
-### 14. `AM.PUTTIMESTAMP` silently coerces out-of-range values to UNIX_EPOCH on JSON export
+### 14. `AM.PUTTIMESTAMP` silently coerces out-of-range values to UNIX_EPOCH on JSON export  ✅ RESOLVED 2026-05-10
 
 **File:** `ext.rs:87-89, 2316-2318`
 
@@ -472,7 +472,17 @@ original timestamp irreversibly.
 error rather than store a value that cannot be represented), or surface the
 overflow on export rather than silently substituting epoch.
 
-### 15. `AM.PUTDOUBLE` accepts NaN/Infinity, then `AM.TOJSON` silently coerces to JSON `null`
+**Resolution (2026-05-10):** `am_puttimestamp` now probes
+`chrono::DateTime::from_timestamp_millis(value)` immediately after parsing
+the `i64`. If `None` (the same predicate the JSON exporter would
+otherwise silently swallow into `UNIX_EPOCH`), the handler returns
+`"timestamp <n> ms is outside the representable range"`. The exporter's
+`unwrap_or_else(|| UNIX_EPOCH)` fallback is kept as defense in depth.
+Regression test (`scripts/tests/11-marks.sh` Test 18) asserts both
+`i64::MAX` and `i64::MIN` are rejected and that 1700000000000 ms still
+round-trips through TOJSON as a 2023-11 ISO 8601 string.
+
+### 15. `AM.PUTDOUBLE` accepts NaN/Infinity, then `AM.TOJSON` silently coerces to JSON `null`  ✅ RESOLVED 2026-05-10
 
 **File:** `lib.rs:559-561` (input), `ext.rs:79-83, 2306-2312` (output)
 
@@ -491,7 +501,18 @@ NaN/Infinity inserts inconsistently.
 
 **Recommendation:** Reject non-finite doubles at write time with an error.
 
-### 16. `AM.MARKCREATE` value type is auto-detected — silent type coercion
+**Resolution (2026-05-10):** `am_putdouble` and `am_appenddouble` now
+reject any non-finite `f64` (`!value.is_finite()`) immediately after
+parse, returning `"value must be a finite double (NaN/Infinity rejected)"`.
+The same finite check is reused inside `am_markcreate`'s `double` arm so
+the marks code path can no longer be used as a back door (see #16).
+RediSearch numeric indexes (when format=json) therefore can't drift
+because the document never holds the value in the first place.
+Regression tests (`scripts/tests/11-marks.sh` Tests 19 and 20) cover
+`NaN`, `nan`, `Inf`, `inf`, `-inf`, `+inf`, `Infinity`, `infinity` for
+both PUTDOUBLE and APPENDDOUBLE.
+
+### 16. `AM.MARKCREATE` value type is auto-detected — silent type coercion  ✅ RESOLVED 2026-05-10
 
 **File:** `lib.rs:374-386`
 
@@ -514,6 +535,27 @@ hardened.
 **Recommendation:** Add an explicit type prefix (e.g., `s:foo`, `i:42`,
 `b:true`, `f:3.14`) or a separate command per type. Reject `NaN`/`Infinity`
 at this site.
+
+**Resolution (2026-05-10):** Took the explicit-type-argument variant of
+the audit's recommendation. The command shape changed from
+`AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]` to
+`AM.MARKCREATE <key> <path> <name> <type> <value> <start> <end> [expand]`,
+where `<type>` is one of `string`, `int`, `double`, `bool`. The
+auto-detect block was removed entirely; the value is now parsed strictly
+according to the declared type. Per-type parse failures and unknown
+types return descriptive errors. The `double` arm reuses the same
+`is_finite()` check from #15 so non-finite floats can't sneak in
+through the marks path. A literal-string mark value of `"true"`, `"123"`,
+or `"NaN"` is now stored as a string when `type=string`, instead of
+silently becoming a Boolean / Int / non-finite F64.
+
+**Breaking change.** Same posture as audit #12 (the index-config store-key
+arg): one extra positional argument per call. All existing
+`scripts/tests/11-marks.sh` invocations and every `AM.MARKCREATE` example
+in the README were updated to include a type. New regression tests
+(`11-marks.sh` Tests 21 and 22) cover the audit-named coercion case
+(`true`-as-string), unknown-type rejection, the marks-path NaN guard,
+and per-type parse-failure error messages.
 
 ### 17. `RedisString::to_string()` is lossy for non-UTF8 keys when constructing index shadow keys
 

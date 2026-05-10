@@ -261,7 +261,7 @@ assert_equals "$v" "hello diff"
 
 # AM.MARKCREATE — adding a mark doesn't change the text content but must
 # still leave the indexed value intact (shadow not corrupted by the trigger).
-redis-cli -h "$HOST" am.markcreate "audit11:doc" body bold true 0 5 > /dev/null
+redis-cli -h "$HOST" am.markcreate "audit11:doc" body bold bool true 0 5 > /dev/null
 v=$(redis-cli -h "$HOST" --raw hget "am:idx:audit11:doc" body)
 assert_equals "$v" "hello diff"
 

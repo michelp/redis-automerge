@@ -49,7 +49,7 @@ A Redis module that integrates [Automerge](https://automerge.org/) CRDT (Conflic
     - [`AM.GETCOUNTER <key> <path>`](#amgetcounter-key-path)
     - [`AM.INCCOUNTER <key> <path> <delta>`](#aminccounter-key-path-delta)
   - [Text Marks Operations](#text-marks-operations)
-    - [`AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]`](#ammarkcreate-key-path-name-value-start-end-expand)
+    - [`AM.MARKCREATE <key> <path> <name> <type> <value> <start> <end> [expand]`](#ammarkcreate-key-path-name-type-value-start-end-expand)
     - [`AM.MARKS <key> <path>`](#ammarks-key-path)
     - [`AM.MARKCLEAR <key> <path> <name> <start> <end> [expand]`](#ammarkclear-key-path-name-start-end-expand)
   - [List Operations](#list-operations)
@@ -599,23 +599,24 @@ AM.GETCOUNTER doc1 views
 
 Marks provide rich text metadata for text content, allowing you to annotate ranges of text with attributes like formatting, links, comments, or any custom metadata. Marks are ideal for building collaborative rich text editors.
 
-#### `AM.MARKCREATE <key> <path> <name> <value> <start> <end> [expand]`
+#### `AM.MARKCREATE <key> <path> <name> <type> <value> <start> <end> [expand]`
 Create a mark on a text range. Marks annotate character ranges with metadata.
 
 ```redis
 # Create a bold mark on characters 0-5
-AM.MARKCREATE mydoc content bold true 0 5
+AM.MARKCREATE mydoc content bold bool true 0 5
 
 # Create a link mark with URL
-AM.MARKCREATE mydoc content link "https://example.com" 10 20
+AM.MARKCREATE mydoc content link string "https://example.com" 10 20
 
 # Create a comment mark
-AM.MARKCREATE mydoc content comment "Fix this typo" 15 19
+AM.MARKCREATE mydoc content comment string "Fix this typo" 15 19
 ```
 
 Parameters:
 - `name` - Mark identifier (e.g., "bold", "link", "comment")
-- `value` - Mark value (string, integer, double, or boolean)
+- `type` - Value type: `string`, `int`, `double`, or `bool` (must be specified explicitly; the previous auto-detect was removed because it silently coerced literal-string values like `"true"`, `"123"`, or `"NaN"` to bool/int/non-finite-f64 — see SECURITY_AUDIT.md #16)
+- `value` - Mark value, parsed according to `type`. Non-finite doubles (`NaN`, `Infinity`) are rejected.
 - `start` - Start position (0-indexed, inclusive)
 - `end` - End position (0-indexed, exclusive)
 - `expand` - (optional) How mark expands with edits: "none", "before", "after", "both" (default: "none")
@@ -1090,18 +1091,19 @@ AM.NEW doc:article
 # Add initial content
 AM.PUTTEXT doc:article content "Welcome to our collaborative editor!"
 
-# Apply formatting marks
+# Apply formatting marks (each value carries an explicit type:
+# string | int | double | bool)
 # Make "Welcome" bold (characters 0-7)
-AM.MARKCREATE doc:article content bold true 0 7
+AM.MARKCREATE doc:article content bold bool true 0 7
 
 # Make "collaborative" italic (characters 15-28)
-AM.MARKCREATE doc:article content italic true 15 28
+AM.MARKCREATE doc:article content italic bool true 15 28
 
 # Add a link to "editor" (characters 29-35)
-AM.MARKCREATE doc:article content link "https://example.com/editor" 29 35
+AM.MARKCREATE doc:article content link string "https://example.com/editor" 29 35
 
 # Add a comment mark for review
-AM.MARKCREATE doc:article content comment "Great intro!" 0 35
+AM.MARKCREATE doc:article content comment string "Great intro!" 0 35
 
 # Retrieve all marks to render in UI
 AM.MARKS doc:article content
@@ -1122,10 +1124,10 @@ AM.MARKS doc:article content
 
 # Multiple users can add marks simultaneously
 # User A adds highlight
-AM.MARKCREATE doc:article content highlight "yellow" 8 11
+AM.MARKCREATE doc:article content highlight string "yellow" 8 11
 
 # User B adds font size (with expand behavior)
-AM.MARKCREATE doc:article content fontSize 16 0 7 both
+AM.MARKCREATE doc:article content fontSize int 16 0 7 both
 
 # All marks merge automatically with CRDT conflict resolution
 AM.MARKS doc:article content
@@ -1140,7 +1142,7 @@ AM.NEW doc:notes
 AM.PUTTEXT doc:notes text "Hello World"
 
 # Create a bold mark that expands on both sides
-AM.MARKCREATE doc:notes text bold true 0 5 both
+AM.MARKCREATE doc:notes text bold bool true 0 5 both
 
 # Insert text at the beginning (position 0)
 AM.SPLICETEXT doc:notes text 0 0 "**"
@@ -1155,7 +1157,7 @@ AM.MARKS doc:notes text
 # Returns: ["bold", true, 0, 9]
 
 # Create a mark that doesn't expand
-AM.MARKCREATE doc:notes text code true 10 15 none
+AM.MARKCREATE doc:notes text code bool true 10 15 none
 
 # Insert at boundaries - mark doesn't expand
 AM.SPLICETEXT doc:notes text 10 0 "["
@@ -1174,13 +1176,13 @@ AM.NEW doc:proposal
 AM.PUTTEXT doc:proposal content "We propose to implement the new feature by Q2 2024."
 
 # Team member adds suggestion
-AM.MARKCREATE doc:proposal content suggestion "Consider Q1 instead?" 43 50
+AM.MARKCREATE doc:proposal content suggestion string "Consider Q1 instead?" 43 50
 
 # Another member adds approval mark
-AM.MARKCREATE doc:proposal content approved true 0 50
+AM.MARKCREATE doc:proposal content approved bool true 0 50
 
 # Project manager highlights key section
-AM.MARKCREATE doc:proposal content priority "high" 15 39
+AM.MARKCREATE doc:proposal content priority string "high" 15 39
 
 # Export to JSON for external tools
 AM.TOJSON doc:proposal true
