@@ -280,6 +280,55 @@ mismatch=$(redis-cli -h "$HOST" am.index.delete am:index:wrong "audit12:*" 2>&1)
 echo "$mismatch" | grep -qi "store-key must match"
 echo "   ✓ Mismatched store-key returns an explicit error"
 
+# Test 15d: Audit #13 regression — the indexer must not clobber a user key
+# that happens to live at am:idx:<name>. The shadow-ownership check (sentinel
+# field __am_idx__) refuses to overwrite/delete keys it does not own and
+# preserves the user's original data unchanged.
+echo "Test 15d: Pre-existing user Hash at shadow path is preserved..."
+redis-cli -h "$HOST" am.index.configure am:index:configs "collision:*" body > /dev/null
+# User stashes data at exactly the shadow path the indexer would use.
+redis-cli -h "$HOST" del "am:idx:collision:doc" > /dev/null
+redis-cli -h "$HOST" hset "am:idx:collision:doc" mine "user-content" > /dev/null
+# Now create the AM doc that would match the index pattern.
+redis-cli -h "$HOST" del "collision:doc" > /dev/null
+redis-cli -h "$HOST" am.new "collision:doc" > /dev/null
+result=$(redis-cli -h "$HOST" am.puttext "collision:doc" body "from automerge" 2>&1)
+# AM.PUTTEXT itself succeeds (indexer errors are best-effort, see
+# try_update_search_index in lib.rs).
+assert_equals "$result" "OK"
+# But the user's original Hash field MUST still be intact.
+mine=$(redis-cli -h "$HOST" --raw hget "am:idx:collision:doc" mine)
+assert_equals "$mine" "user-content"
+# And the indexer must NOT have written its own field.
+indexed=$(redis-cli -h "$HOST" --raw hget "am:idx:collision:doc" body)
+assert_equals "$indexed" ""
+# No sentinel was added either.
+sentinel=$(redis-cli -h "$HOST" --raw hget "am:idx:collision:doc" __am_idx__)
+assert_equals "$sentinel" ""
+# Cleanup.
+redis-cli -h "$HOST" del "am:idx:collision:doc" "collision:doc" > /dev/null
+redis-cli -h "$HOST" am.index.delete am:index:configs "collision:*" > /dev/null
+echo "   ✓ User Hash at am:idx:collision:doc preserved; indexer skipped"
+
+# Test 15e: With no pre-existing collision the indexer creates a properly
+# stamped shadow, including the __am_idx__ sentinel.
+echo "Test 15e: Owned shadow carries the sentinel..."
+redis-cli -h "$HOST" am.index.configure am:index:configs "owned:*" title > /dev/null
+redis-cli -h "$HOST" del "am:idx:owned:doc" "owned:doc" > /dev/null
+redis-cli -h "$HOST" am.new "owned:doc" > /dev/null
+redis-cli -h "$HOST" am.puttext "owned:doc" title "Hello" > /dev/null
+sentinel=$(redis-cli -h "$HOST" --raw hget "am:idx:owned:doc" __am_idx__)
+assert_equals "$sentinel" "owned:doc"
+title=$(redis-cli -h "$HOST" --raw hget "am:idx:owned:doc" title)
+assert_equals "$title" "Hello"
+# A subsequent write should keep working since we own the shadow.
+redis-cli -h "$HOST" am.puttext "owned:doc" title "Hello again" > /dev/null
+title=$(redis-cli -h "$HOST" --raw hget "am:idx:owned:doc" title)
+assert_equals "$title" "Hello again"
+redis-cli -h "$HOST" del "am:idx:owned:doc" "owned:doc" > /dev/null
+redis-cli -h "$HOST" am.index.delete am:index:configs "owned:*" > /dev/null
+echo "   ✓ Sentinel is set on creation and updates pass through"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available

@@ -394,7 +394,7 @@ regression tests (`scripts/tests/15-search-indexing.sh` Test 15c and
 the Test 2/6/7 rewrites) exercise the new storage layout and the
 mismatched-store-key error path. All 17 integration test suites pass.
 
-### 13. Index shadow keys (`am:idx:*`) collide with arbitrary user keys
+### 13. Index shadow keys (`am:idx:*`) collide with arbitrary user keys  ✅ RESOLVED 2026-05-10
 
 **File:** `index.rs:436, 445, 465`
 
@@ -414,6 +414,43 @@ user's `HSET am:idx:foo field val` survives only until the next
 (`__am_idx__: 1`) and refuse to overwrite/delete keys that lack the sentinel,
 returning a configuration error instead. Alternatively, use a less collidable
 prefix (`__am_internal_idx__:`).
+
+**Resolution (2026-05-10):** Took the sentinel-field path. Every shadow this
+module writes carries an `__am_idx__` field stamped with the source
+Automerge document key, both for Hash format (one HSET) and JSON format
+(injected as a top-level field before serialization). Before any
+overwrite or delete, the indexer probes via `TYPE` + `HGET`/`JSON.GET`
+and refuses to touch:
+- a key whose Redis type doesn't match the configured index format
+  (e.g. a string at `am:idx:foo`),
+- a Hash/JSON document that lacks the `__am_idx__` sentinel
+  (legacy data or unrelated user data),
+- a stamped shadow whose sentinel value names a different source key
+  (would only happen with a manual rename/copy of shadow keys).
+
+When a collision is detected, `update_search_index` returns an error which
+the existing `try_update_search_index` wrapper in `lib.rs` logs as a
+warning. The originating `AM.*` write itself still succeeds — the source
+document is correct, only the shadow is left untouched, so an operator
+who accidentally configures an index pattern that overlaps with existing
+user keys finds the unrelated data preserved and a clear log line
+naming the conflict.
+
+The shadow-key prefix (`am:idx:`) is unchanged so existing FT.CREATE
+configurations continue to work. New regression tests
+(`scripts/tests/15-search-indexing.sh` Tests 15d and 15e) exercise both
+sides: pre-existing user data at the shadow path stays intact while the
+indexed write is skipped, and a fresh shadow correctly carries the
+sentinel and accepts subsequent updates. All 17 integration test suites
+pass.
+
+**Caveat:** legacy shadows from before this change lack the sentinel and
+will now be refused (not clobbered) on the next write. Operators
+upgrading should run `AM.INDEX.REINDEX` after manually deleting any
+pre-existing `am:idx:*` keys, or accept that those legacy shadows go
+stale until an operator clears them. This is documented as the safe
+default — the alternative (silently overwriting) is exactly what the
+audit asked us to stop doing.
 
 ### 14. `AM.PUTTIMESTAMP` silently coerces out-of-range values to UNIX_EPOCH on JSON export
 

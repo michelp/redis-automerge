@@ -13,6 +13,111 @@ use std::sync::RwLock;
 /// Prefix for shadow Hash keys
 const INDEX_KEY_PREFIX: &str = "am:idx:";
 
+/// Sentinel field embedded in every shadow document this module owns. The
+/// value is the source Automerge document key, giving the shadow a clear
+/// owner stamp. Before overwriting or deleting a shadow at `am:idx:<key>`,
+/// the indexer probes for this field and refuses to touch keys that lack
+/// it, so a user's pre-existing key at e.g. `am:idx:foo` is never silently
+/// clobbered. See SECURITY_AUDIT.md #13.
+pub const INDEX_SENTINEL_FIELD: &str = "__am_idx__";
+
+/// Result of probing a candidate shadow key before we write/delete.
+enum ShadowState {
+    /// The key does not exist; safe to create a fresh shadow.
+    Absent,
+    /// The key exists and belongs to this module (sentinel matches).
+    OwnedByUs,
+    /// The key exists but is not a shadow we own. Caller must abort the
+    /// write rather than clobber an unrelated user key.
+    Conflict(String),
+}
+
+/// Probe whether the shadow key at `index_key` is safe to overwrite or
+/// delete. The probe uses `TYPE` (no allocation, O(1)) followed by either
+/// `HGET` (Hash format) or `JSON.GET` (JSON format) to read the sentinel
+/// field. Audit #13.
+fn check_shadow_ownership(
+    ctx: &Context,
+    index_key: &str,
+    am_key: &str,
+    format: IndexFormat,
+) -> RedisResult<ShadowState> {
+    let key_rs = ctx.create_string(index_key);
+    let type_result = ctx.call("TYPE", &[&key_rs])?;
+    let type_str = match type_result {
+        RedisValue::SimpleString(s) | RedisValue::BulkString(s) => s,
+        _ => return Ok(ShadowState::Conflict("unexpected TYPE response".to_string())),
+    };
+    if type_str == "none" {
+        return Ok(ShadowState::Absent);
+    }
+    let expected_type = match format {
+        IndexFormat::Hash => "hash",
+        IndexFormat::Json => "ReJSON-RL",
+    };
+    if type_str != expected_type {
+        return Ok(ShadowState::Conflict(format!(
+            "key type {:?}, expected {:?}",
+            type_str, expected_type
+        )));
+    }
+    let stamped = match format {
+        IndexFormat::Hash => {
+            let result = ctx.call(
+                "HGET",
+                &[&key_rs, &ctx.create_string(INDEX_SENTINEL_FIELD)],
+            )?;
+            match result {
+                RedisValue::SimpleString(s) | RedisValue::BulkString(s) => Some(s),
+                _ => None,
+            }
+        }
+        IndexFormat::Json => {
+            let path = format!("$.{}", INDEX_SENTINEL_FIELD);
+            let result = ctx.call("JSON.GET", &[&key_rs, &ctx.create_string(path.as_str())])?;
+            match result {
+                RedisValue::SimpleString(s) | RedisValue::BulkString(s) => {
+                    // JSON.GET returns a JSON array (e.g. `["am_key"]`) when
+                    // querying with `$.field`. Strip the wrapping to get the
+                    // string value back.
+                    serde_json::from_str::<Vec<String>>(&s)
+                        .ok()
+                        .and_then(|mut v| v.pop())
+                }
+                _ => None,
+            }
+        }
+    };
+    match stamped {
+        Some(owner) if owner == am_key => Ok(ShadowState::OwnedByUs),
+        Some(owner) => Ok(ShadowState::Conflict(format!(
+            "shadow owned by {:?}, not {:?}",
+            owner, am_key
+        ))),
+        None => Ok(ShadowState::Conflict(
+            "shadow lacks the __am_idx__ sentinel field".to_string(),
+        )),
+    }
+}
+
+/// Returns Err describing the conflict, or Ok with whether the key
+/// already existed (so callers can avoid a redundant DEL when Absent).
+fn ensure_safe_to_write(
+    ctx: &Context,
+    index_key: &str,
+    am_key: &str,
+    format: IndexFormat,
+) -> RedisResult<bool> {
+    match check_shadow_ownership(ctx, index_key, am_key, format)? {
+        ShadowState::Absent => Ok(false),
+        ShadowState::OwnedByUs => Ok(true),
+        ShadowState::Conflict(why) => Err(RedisError::String(format!(
+            "refusing to overwrite shadow key {:?}: {}",
+            index_key, why
+        ))),
+    }
+}
+
 /// Process-global cache of `IndexConfig` entries keyed by pattern.
 ///
 /// `None` means the cache has not been populated yet. The first read after a
@@ -438,29 +543,44 @@ pub fn update_json_index(
     client: &RedisAutomergeClient,
     config: &IndexConfig,
 ) -> RedisResult<bool> {
-    // Build JSON document from configured paths
-    let json_doc = match build_json_document(client, &config.paths) {
-        Some(doc) => doc,
+    let index_key = get_index_key(am_key);
+    let mut json_doc = match build_json_document(client, &config.paths) {
+        Some(JsonValue::Object(map)) => map,
+        Some(_) => Map::new(), // shouldn't happen — build_json_document always returns an object
         None => {
-            // No fields to index - delete the index if it exists
-            let index_key = get_index_key(am_key);
-            ctx.call("DEL", &[&ctx.create_string(index_key)])?;
-            return Ok(false);
+            match check_shadow_ownership(ctx, &index_key, am_key, IndexFormat::Json)? {
+                ShadowState::Absent => return Ok(false),
+                ShadowState::OwnedByUs => {
+                    ctx.call("DEL", &[&ctx.create_string(index_key.as_str())])?;
+                    return Ok(false);
+                }
+                ShadowState::Conflict(why) => {
+                    return Err(RedisError::String(format!(
+                        "refusing to delete shadow key {:?}: {}",
+                        index_key, why
+                    )));
+                }
+            }
         }
     };
 
-    // Serialize JSON to string
-    let json_str = serde_json::to_string(&json_doc)
+    // Inject the ownership sentinel before serializing (audit #13).
+    json_doc.insert(
+        INDEX_SENTINEL_FIELD.to_string(),
+        JsonValue::String(am_key.to_string()),
+    );
+    let json_str = serde_json::to_string(&JsonValue::Object(json_doc))
         .map_err(|e| RedisError::String(format!("Failed to serialize JSON: {}", e)))?;
 
-    // Store as RedisJSON document
-    let index_key = get_index_key(am_key);
+    // Refuse to overwrite a key we don't own.
+    let _ = ensure_safe_to_write(ctx, &index_key, am_key, IndexFormat::Json)?;
+
     ctx.call(
         "JSON.SET",
         &[
-            &ctx.create_string(index_key),
+            &ctx.create_string(index_key.as_str()),
             &ctx.create_string("$"),
-            &ctx.create_string(json_str),
+            &ctx.create_string(json_str.as_str()),
         ],
     )?;
 
@@ -496,31 +616,52 @@ fn update_hash_index(
     client: &RedisAutomergeClient,
     config: &IndexConfig,
 ) -> RedisResult<bool> {
-    // Extract configured fields
     let fields = extract_indexed_fields(client, &config.paths);
+    let index_key = get_index_key(am_key);
 
     if fields.is_empty() {
-        // No fields to index - delete the index Hash
-        let index_key = get_index_key(am_key);
-        ctx.call("DEL", &[&ctx.create_string(index_key)])?;
-        return Ok(false);
+        // No fields to index — drop the shadow if we own one. If the key
+        // belongs to someone else (audit #13) refuse rather than DEL it.
+        match check_shadow_ownership(ctx, &index_key, am_key, IndexFormat::Hash)? {
+            ShadowState::Absent => return Ok(false),
+            ShadowState::OwnedByUs => {
+                ctx.call("DEL", &[&ctx.create_string(index_key.as_str())])?;
+                return Ok(false);
+            }
+            ShadowState::Conflict(why) => {
+                return Err(RedisError::String(format!(
+                    "refusing to delete shadow key {:?}: {}",
+                    index_key, why
+                )));
+            }
+        }
     }
 
-    // Update Hash with extracted fields
-    let index_key = get_index_key(am_key);
+    let existed = ensure_safe_to_write(ctx, &index_key, am_key, IndexFormat::Hash)?;
     let index_key_rs = ctx.create_string(index_key.clone());
 
-    // Delete existing Hash first to ensure clean state
-    ctx.call("DEL", &[&index_key_rs])?;
+    if existed {
+        // We own this shadow — wipe it for clean state.
+        ctx.call("DEL", &[&index_key_rs])?;
+    }
 
-    // Set each field
+    // Stamp the sentinel first so an interrupted write still carries the
+    // ownership marker.
+    ctx.call(
+        "HSET",
+        &[
+            &index_key_rs,
+            &ctx.create_string(INDEX_SENTINEL_FIELD),
+            &ctx.create_string(am_key),
+        ],
+    )?;
     for (field, value) in &fields {
         ctx.call(
             "HSET",
             &[
                 &index_key_rs,
-                &ctx.create_string(field.clone()),
-                &ctx.create_string(value.clone()),
+                &ctx.create_string(field.as_str()),
+                &ctx.create_string(value.as_str()),
             ],
         )?;
     }
@@ -531,8 +672,24 @@ fn update_hash_index(
 /// Delete the search index Hash for a given Automerge key
 pub fn delete_search_index(ctx: &Context, am_key: &str) -> RedisResult<()> {
     let index_key = get_index_key(am_key);
-    ctx.call("DEL", &[&ctx.create_string(index_key)])?;
-    Ok(())
+    // Try Hash first, then JSON. Either way refuse to clobber unowned keys.
+    let state = match check_shadow_ownership(ctx, &index_key, am_key, IndexFormat::Hash)? {
+        ShadowState::Conflict(_) => {
+            // Could be a JSON shadow we own; recheck under that format.
+            check_shadow_ownership(ctx, &index_key, am_key, IndexFormat::Json)?
+        }
+        s => s,
+    };
+    match state {
+        ShadowState::Absent | ShadowState::OwnedByUs => {
+            ctx.call("DEL", &[&ctx.create_string(index_key.as_str())])?;
+            Ok(())
+        }
+        ShadowState::Conflict(why) => Err(RedisError::String(format!(
+            "refusing to delete shadow key {:?}: {}",
+            index_key, why
+        ))),
+    }
 }
 
 #[cfg(test)]
