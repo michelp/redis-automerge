@@ -557,7 +557,7 @@ in the README were updated to include a type. New regression tests
 (`true`-as-string), unknown-type rejection, the marks-path NaN guard,
 and per-type parse-failure error messages.
 
-### 17. `RedisString::to_string()` is lossy for non-UTF8 keys when constructing index shadow keys
+### 17. `RedisString::to_string()` is lossy for non-UTF8 keys when constructing index shadow keys  ✅ RESOLVED 2026-05-10
 
 **File:** `lib.rs:248, 1010, 1192, 1351`
 
@@ -575,6 +575,31 @@ silently corrupt another user's indexed view.
 **Recommendation:** Use the binary-safe path. Pass `RedisString` through to
 the indexer and have the indexer construct the shadow key without going
 through UTF-8 conversion (or reject non-UTF8 keys for indexed patterns).
+
+**Resolution (2026-05-10):** Took the audit's "or reject" alternative —
+after the audit-#11 centralization, all four call sites the audit named
+collapsed to a single one in `finalize_write_meta`, so the rejection
+boundary is a single match block on `key_name.try_as_str()`. If the key
+is not valid UTF-8 we log a warning naming the raw bytes and skip the
+index update; the originating `AM.*` write itself is unaffected (the
+source document is still stored binary-safely in the Automerge data
+type). This eliminates the collision risk by construction: two distinct
+binary keys can no longer collapse to the same U+FFFD-replaced shadow
+path because neither one ever reaches the shadow layer.
+
+The full binary-safe rewrite was considered and rejected. RedisJSON
+requires UTF-8 strings so the JSON-format indexer would have to reject
+non-UTF8 keys anyway, and matches between non-UTF8 keys and configured
+patterns (which are user-supplied UTF-8 strings) are an unlikely use
+case in practice. Limiting indexing to UTF-8 keys is a clean semantic
+boundary that costs almost nothing.
+
+Regression test (`scripts/tests/15-search-indexing.sh` Test 15f): two
+binary keys `binkey:\xff\xfe` and `binkey:\xff\xfd` are sent via raw
+RESP through bash's `/dev/tcp` (redis-cli only accepts binary at the
+last argument position). The test asserts that no shadow under the
+`am:idx:binkey:*` prefix is created — confirming the indexer skipped
+both. All 17 integration test suites pass.
 
 ---
 

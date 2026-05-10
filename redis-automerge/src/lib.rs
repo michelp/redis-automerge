@@ -313,7 +313,20 @@ fn finalize_write_meta(
     ctx.notify_keyspace_event(redis_module::NotifyEvent::MODULE, cmd, key_name);
     let key = ctx.open_key(key_name);
     if let Ok(Some(client)) = key.get_value::<RedisAutomergeClient>(&REDIS_AUTOMERGE_TYPE) {
-        try_update_search_index(ctx, &key_name.to_string(), client);
+        // Audit #17: only index documents whose keys are valid UTF-8.
+        // `RedisString::to_string()` is lossy (replaces non-UTF8 bytes with
+        // U+FFFD), so two distinct binary keys could collapse to the same
+        // shadow path and silently corrupt each other's indexed view.
+        // Indexing requires UTF-8 anyway (config patterns, RedisJSON sentinel
+        // field, etc.) — gate at the boundary instead.
+        match key_name.try_as_str() {
+            Ok(s) => try_update_search_index(ctx, s, client),
+            Err(_) => ctx.log_warning(&format!(
+                "skipping search-index update for non-UTF8 key (audit #17); \
+                 raw bytes: {:?}",
+                key_name.as_slice(),
+            )),
+        }
     }
     Ok(RedisValue::SimpleStringStatic("OK"))
 }

@@ -329,6 +329,58 @@ redis-cli -h "$HOST" del "am:idx:owned:doc" "owned:doc" > /dev/null
 redis-cli -h "$HOST" am.index.delete am:index:configs "owned:*" > /dev/null
 echo "   ✓ Sentinel is set on creation and updates pass through"
 
+# Test 15f: Audit #17 regression — non-UTF8 keys must not collide via the
+# lossy `RedisString::to_string()` conversion. The indexer now skips
+# documents whose key is not valid UTF-8 so two distinct binary keys can
+# no longer share a shadow path. We send raw RESP via bash's /dev/tcp
+# because redis-cli only accepts binary at the last arg position.
+echo "Test 15f: Non-UTF8 key skips indexing (no collision)..."
+redis-cli -h "$HOST" am.index.configure am:index:configs "*" title > /dev/null
+
+# Helper: send a single RESP command of N bulk-string args via /dev/tcp.
+# Args are passed through `printf '%b'` so \xNN escapes are honored.
+send_resp_binary() {
+    exec 3<>"/dev/tcp/$HOST/6379"
+    local n=$#
+    printf '*%d\r\n' "$n" >&3
+    for arg in "$@"; do
+        # Resolve %b escapes to actual bytes, count them, write the bulk header
+        # and the bytes verbatim. We use a temp file because $() strips NULs
+        # (we don't actually use NUL but principled).
+        local tmp
+        tmp=$(mktemp)
+        printf '%b' "$arg" > "$tmp"
+        local len
+        len=$(wc -c < "$tmp")
+        printf '$%d\r\n' "$len" >&3
+        cat "$tmp" >&3
+        printf '\r\n' >&3
+        rm -f "$tmp"
+    done
+    # Drain reply so the server doesn't block on a half-closed pipe.
+    timeout 1 cat <&3 > /dev/null 2>&1 || true
+    exec 3<&-
+    exec 3>&-
+}
+
+# Two distinct binary keys that would collapse to the same U+FFFD-replaced
+# UTF-8 string under the old to_string() path: one ends in \xff\xfe, the
+# other in \xff\xfd. Both start with the printable prefix `binkey:`.
+send_resp_binary 'AM.NEW' 'binkey:\xff\xfe'
+send_resp_binary 'AM.PUTTEXT' 'binkey:\xff\xfe' 'title' 'A'
+send_resp_binary 'AM.NEW' 'binkey:\xff\xfd'
+send_resp_binary 'AM.PUTTEXT' 'binkey:\xff\xfd' 'title' 'B'
+
+# No shadow under the binkey: prefix should exist — indexing was skipped.
+shadows=$(redis-cli -h "$HOST" --scan --pattern 'am:idx:binkey:*' | wc -l)
+assert_equals "$shadows" "0"
+
+# Cleanup: DEL the binary AM keys.
+send_resp_binary 'DEL' 'binkey:\xff\xfe'
+send_resp_binary 'DEL' 'binkey:\xff\xfd'
+redis-cli -h "$HOST" am.index.delete am:index:configs "*" > /dev/null
+echo "   ✓ Non-UTF8 keys skip indexing; no shadow collision"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available
