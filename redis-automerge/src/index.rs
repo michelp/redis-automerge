@@ -4,13 +4,11 @@
 ///! to Redis Hashes or RedisJSON documents that can be indexed by RediSearch.
 
 use crate::ext::{RedisAutomergeClient, TypedValue};
+use crate::index_config_key;
 use redis_module::{Context, RedisError, RedisResult, RedisValue};
 use serde_json::{Map, Value as JsonValue};
 use std::collections::HashMap;
 use std::sync::RwLock;
-
-/// Prefix for index configuration keys
-const INDEX_CONFIG_PREFIX: &str = "am:index:config:";
 
 /// Prefix for shadow Hash keys
 const INDEX_KEY_PREFIX: &str = "am:idx:";
@@ -19,66 +17,42 @@ const INDEX_KEY_PREFIX: &str = "am:idx:";
 ///
 /// `None` means the cache has not been populated yet. The first read after a
 /// cold start (or after invalidation) calls [`populate_cache`] which performs
-/// a single `SCAN` over `am:index:config:*`. Subsequent reads are O(K) over
-/// the number of configured patterns rather than O(N) over the keyspace.
+/// a single `HGETALL` against the configured index-config storage key.
+/// Subsequent reads are O(K) over the number of configured patterns rather
+/// than O(N) over the keyspace.
 ///
 /// Invalidated by every write through `AM.INDEX.CONFIGURE`, `AM.INDEX.ENABLE`,
-/// and `AM.INDEX.DISABLE`. Direct user manipulation of `am:index:config:*`
-/// keys (e.g. via raw `HSET`) is not detected; restart Redis to re-read.
+/// `AM.INDEX.DISABLE`, and `AM.INDEX.DELETE`. Direct user manipulation of
+/// the storage Hash (e.g. via raw `HSET`/`HDEL`) is not detected; restart
+/// Redis to re-read.
 static CONFIG_CACHE: RwLock<Option<HashMap<String, IndexConfig>>> = RwLock::new(None);
 
-/// Populate the cache from Redis using a non-blocking `SCAN` cursor loop.
+/// Populate the cache from Redis with a single `HGETALL` against the
+/// configured store key. Each field is one pattern; each value is the
+/// JSON-serialized `IndexConfig` written by [`IndexConfig::save`].
 fn populate_cache(ctx: &Context) -> RedisResult<HashMap<String, IndexConfig>> {
     let mut map: HashMap<String, IndexConfig> = HashMap::new();
-    let scan_match = format!("{}*", INDEX_CONFIG_PREFIX);
-    let mut cursor: String = "0".to_string();
+    let store_key = ctx.create_string(index_config_key());
+    let result = ctx.call("HGETALL", &[&store_key])?;
 
-    loop {
-        let result = ctx.call(
-            "SCAN",
-            &[
-                &ctx.create_string(cursor.as_str()),
-                &ctx.create_string("MATCH"),
-                &ctx.create_string(scan_match.as_str()),
-                &ctx.create_string("COUNT"),
-                &ctx.create_string("100"),
-            ],
-        )?;
+    let items = match result {
+        RedisValue::Array(items) => items,
+        _ => return Err(RedisError::Str("unexpected HGETALL response shape")),
+    };
 
-        let (next_cursor, keys) = match result {
-            RedisValue::Array(items) if items.len() == 2 => {
-                let mut iter = items.into_iter();
-                let cursor_val = iter.next().unwrap();
-                let keys_val = iter.next().unwrap();
-                let next_cursor = match cursor_val {
-                    RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
-                    _ => return Err(RedisError::Str("unexpected SCAN cursor type")),
-                };
-                let keys = match keys_val {
-                    RedisValue::Array(k) => k,
-                    _ => return Err(RedisError::Str("unexpected SCAN keys type")),
-                };
-                (next_cursor, keys)
-            }
-            _ => return Err(RedisError::Str("unexpected SCAN response shape")),
+    let mut iter = items.into_iter();
+    while let (Some(field), Some(value)) = (iter.next(), iter.next()) {
+        let pattern = match field {
+            RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
+            _ => continue,
         };
-
-        for key_val in keys {
-            let key_str = match key_val {
-                RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
-                _ => continue,
-            };
-            if let Some(pattern) = key_str.strip_prefix(INDEX_CONFIG_PREFIX) {
-                if let Ok(Some(cfg)) = IndexConfig::load(ctx, pattern) {
-                    map.insert(pattern.to_string(), cfg);
-                }
-            }
+        let serialized = match value {
+            RedisValue::BulkString(s) | RedisValue::SimpleString(s) => s,
+            _ => continue,
+        };
+        if let Some(cfg) = IndexConfig::deserialize(&pattern, &serialized) {
+            map.insert(pattern, cfg);
         }
-
-        if next_cursor == "0" {
-            break;
-        }
-        cursor = next_cursor;
     }
 
     Ok(map)
@@ -180,95 +154,89 @@ impl IndexConfig {
         }
     }
 
-    /// Get the Redis key for storing this configuration
-    fn config_key(&self) -> String {
-        format!("{}{}", INDEX_CONFIG_PREFIX, self.pattern)
+    /// Serialize this config to the JSON form stored in the index-config
+    /// Hash. The `pattern` field is omitted from the value because it is
+    /// already the Hash field name; this keeps the storage compact and
+    /// avoids the redundant-pattern-mismatch failure mode.
+    fn serialize(&self) -> String {
+        let body = serde_json::json!({
+            "enabled": self.enabled,
+            "paths": self.paths,
+            "format": self.format.as_str(),
+        });
+        body.to_string()
     }
 
-    /// Save configuration to Redis
-    pub fn save(&self, ctx: &Context) -> RedisResult<()> {
-        let key = ctx.create_string(self.config_key());
-
-        // Store as Hash with fields: enabled, paths, format
-        ctx.call(
-            "HSET",
-            &[
-                &key,
-                &ctx.create_string("enabled"),
-                &ctx.create_string(if self.enabled { "1" } else { "0" }),
-            ],
-        )?;
-
-        let paths_str = self.paths.join(",");
-        ctx.call(
-            "HSET",
-            &[
-                &key,
-                &ctx.create_string("paths"),
-                &ctx.create_string(paths_str),
-            ],
-        )?;
-
-        ctx.call(
-            "HSET",
-            &[
-                &key,
-                &ctx.create_string("format"),
-                &ctx.create_string(self.format.as_str()),
-            ],
-        )?;
-
-        Ok(())
-    }
-
-    /// Load configuration from Redis
-    pub fn load(ctx: &Context, pattern: &str) -> RedisResult<Option<Self>> {
-        let key = ctx.create_string(format!("{}{}", INDEX_CONFIG_PREFIX, pattern));
-
-        // Check if key exists
-        let exists_result = ctx.call("EXISTS", &[&key])?;
-        let exists: i64 = match exists_result {
-            RedisValue::Integer(i) => i,
-            _ => return Err(RedisError::Str("Unexpected response from EXISTS")),
-        };
-
-        if exists == 0 {
-            return Ok(None);
-        }
-
-        // Get enabled field
-        let enabled_result = ctx.call("HGET", &[&key, &ctx.create_string("enabled")])?;
-        let enabled = match enabled_result {
-            RedisValue::SimpleString(s) | RedisValue::BulkString(s) => s == "1",
-            _ => true, // Default to enabled
-        };
-
-        // Get paths field
-        let paths_result = ctx.call("HGET", &[&key, &ctx.create_string("paths")])?;
-        let paths = match paths_result {
-            RedisValue::SimpleString(s) | RedisValue::BulkString(s) => s
-                .split(',')
-                .map(|p| p.to_string())
-                .filter(|p| !p.is_empty())
-                .collect(),
-            _ => Vec::new(),
-        };
-
-        // Get format field (default to Hash for backward compatibility)
-        let format_result = ctx.call("HGET", &[&key, &ctx.create_string("format")])?;
-        let format = match format_result {
-            RedisValue::SimpleString(s) | RedisValue::BulkString(s) => {
-                IndexFormat::from_str(&s).unwrap_or(IndexFormat::Hash)
-            }
-            _ => IndexFormat::Hash, // Default to Hash
-        };
-
-        Ok(Some(Self {
+    /// Deserialize a single Hash field value back into an `IndexConfig`. The
+    /// caller supplies the pattern (the Hash field name). Returns `None` if
+    /// the value cannot be parsed; we tolerate corrupted entries silently
+    /// rather than failing the whole `HGETALL` populate, but a warning is
+    /// not yet logged because `populate_cache` does not have a `Context`
+    /// suitable for logging from the cold-start path. Audit-followup item.
+    fn deserialize(pattern: &str, serialized: &str) -> Option<Self> {
+        let v: JsonValue = serde_json::from_str(serialized).ok()?;
+        let obj = v.as_object()?;
+        let enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true);
+        let paths = obj
+            .get("paths")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| p.as_str().map(String::from))
+                    .collect::<Vec<String>>()
+            })
+            .unwrap_or_default();
+        let format = obj
+            .get("format")
+            .and_then(|x| x.as_str())
+            .and_then(IndexFormat::from_str)
+            .unwrap_or(IndexFormat::Hash);
+        Some(Self {
             pattern: pattern.to_string(),
             enabled,
             paths,
             format,
-        }))
+        })
+    }
+
+    /// Save configuration to Redis. Writes one JSON-serialized value into a
+    /// single Hash field of the configured store key (audit #12 / #27 — one
+    /// atomic `HSET` per save, no per-pattern Hash sprawl).
+    pub fn save(&self, ctx: &Context) -> RedisResult<()> {
+        let store_key = ctx.create_string(index_config_key());
+        ctx.call(
+            "HSET",
+            &[
+                &store_key,
+                &ctx.create_string(self.pattern.as_str()),
+                &ctx.create_string(self.serialize().as_str()),
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load configuration from Redis.
+    pub fn load(ctx: &Context, pattern: &str) -> RedisResult<Option<Self>> {
+        let store_key = ctx.create_string(index_config_key());
+        let result = ctx.call("HGET", &[&store_key, &ctx.create_string(pattern)])?;
+        let serialized = match result {
+            RedisValue::SimpleString(s) | RedisValue::BulkString(s) => s,
+            RedisValue::Null => return Ok(None),
+            _ => return Ok(None),
+        };
+        Ok(Self::deserialize(pattern, &serialized))
+    }
+
+    /// Delete a configuration entry from the store. Returns the number of
+    /// fields actually removed (0 or 1) so callers can pass the count back
+    /// through `AM.INDEX.DELETE`.
+    pub fn delete(ctx: &Context, pattern: &str) -> RedisResult<i64> {
+        let store_key = ctx.create_string(index_config_key());
+        let result = ctx.call("HDEL", &[&store_key, &ctx.create_string(pattern)])?;
+        Ok(match result {
+            RedisValue::Integer(n) => n,
+            _ => 0,
+        })
     }
 
     /// Find the configuration that matches a given key.

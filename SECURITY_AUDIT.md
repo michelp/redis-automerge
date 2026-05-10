@@ -328,7 +328,7 @@ indexing cost is bounded by `O(K)` config lookups plus one DEL+HSET batch
 for matching documents — small enough that deferred-update infrastructure
 isn't justified. All 17 integration test suites pass.
 
-### 12. Index-admin commands declared with `0,0,0` first/last/step keys
+### 12. Index-admin commands declared with `0,0,0` first/last/step keys  ✅ RESOLVED 2026-05-09
 
 **File:** `lib.rs:1456-1460`
 
@@ -355,6 +355,44 @@ namespace. Consequences:
 **Recommendation:** Declare the actual keys touched (`am:index:config:<pattern>`)
 or, preferably, route admin operations through a single hash key whose name is
 passed as an argument.
+
+**Resolution (2026-05-09):** Took the audit's preferred path — admin
+operations now route through a single Hash. Storage scheme changed from
+"one Hash per pattern (`am:index:config:<pattern>`) with three fields each"
+to "one Hash for the whole module (`am:index:configs` by default) with one
+field per pattern, value = JSON-serialized config." The default store-key
+is overridable at module load with `index-config-key=<name>`.
+
+Every `AM.INDEX.*` admin command now takes that store-key as its first
+argument (`AM.INDEX.CONFIGURE am:index:configs <pattern> ...`,
+`AM.INDEX.ENABLE am:index:configs <pattern>`, etc.). The keyspec is
+declared as `1, 1, 1`, so:
+- ACL rules like `~am:index:configs +am.index.*` apply correctly to admin
+  commands (previously `0,0,0` exposed no keys to the ACL system).
+- All admin operations route to the single shard owning that key in
+  Redis Cluster (previously commands silently wrote to whichever shard
+  the client happened to be connected to).
+- The handler validates the supplied store-key matches the configured
+  `index-config-key`; mismatches return an explicit error rather than
+  silently writing to a Hash the runtime indexer would never read.
+
+`am.index.status` is no longer `readonly` over an undeclared keyspace —
+it now declares `am:index:configs` as a readonly key, so ACLs that gate
+visibility into the config store work.
+
+Storage simplification side-effect: `IndexConfig::save` is now a single
+atomic `HSET`, which incidentally resolves audit #27 (non-atomic save).
+The cold-start `populate_cache` switched from a `SCAN` cursor loop over
+`am:index:config:*` to a single `HGETALL` against the store key — a
+small additional perf win.
+
+**Breaking change.** Operators with existing `am:index:config:*` keys
+need to re-run `AM.INDEX.CONFIGURE am:index:configs <pattern> ...` for
+each pattern after upgrading; the old per-pattern Hashes will not be
+read. Documented in README.md "Search Indexing" section. Two new
+regression tests (`scripts/tests/15-search-indexing.sh` Test 15c and
+the Test 2/6/7 rewrites) exercise the new storage layout and the
+mismatched-store-key error path. All 17 integration test suites pass.
 
 ### 13. Index shadow keys (`am:idx:*`) collide with arbitrary user keys
 
@@ -552,7 +590,7 @@ belongs alongside finding #10.
 **Recommendation:** Check the symbol once at module load and refuse to load
 the module rather than crashing during a rewrite.
 
-### 27. `IndexConfig::save` is non-atomic (three sequential HSETs)
+### 27. `IndexConfig::save` is non-atomic (three sequential HSETs)  ✅ RESOLVED 2026-05-09
 
 **File:** `index.rs:82-110`
 
@@ -562,6 +600,12 @@ cluster routing error, replica disconnect), the config is half-applied —
 e.g., `enabled` flipped while `paths` still reflects the old state.
 
 **Recommendation:** Issue a single `HSET key f1 v1 f2 v2 f3 v3` call.
+
+**Resolution (2026-05-09):** Resolved as a side-effect of #12. The
+storage scheme changed from "one Hash per pattern with three fields" to
+"one Hash for the whole module with one JSON-serialized value per
+pattern field." `IndexConfig::save` is now a single atomic `HSET` of
+that one field, so partial-write windows are impossible.
 
 ### 28. `am.index.configure` `--format` parsing is brittle
 

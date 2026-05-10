@@ -112,8 +112,21 @@ const MAX_JSON_BYTES: usize = 64 * 1024 * 1024; // 64 MiB
 /// value disables publishing entirely. See SECURITY_AUDIT.md #5.
 const DEFAULT_CHANNEL_PREFIX: &str = "changes:";
 
+/// Default Redis key under which all `AM.INDEX.*` admin commands store their
+/// per-pattern configuration. A single Hash, with one field per registered
+/// pattern, addresses the keyspec/ACL/cluster concerns from SECURITY_AUDIT
+/// finding #12: the key is declared as `args[1]` of every admin command so
+/// `~am:index:configs` ACL rules can target it, and all admin operations
+/// route to the single shard owning this key in cluster mode.
+pub const DEFAULT_INDEX_CONFIG_KEY: &str = "am:index:configs";
+
 /// Resolved channel prefix for this module load. `None` until [`init`] runs.
 static CHANGE_CHANNEL_PREFIX: OnceLock<String> = OnceLock::new();
+
+/// Resolved index-config storage key for this module load. `None` until
+/// [`init`] runs. Overridable via the `index-config-key=...` module-load
+/// argument.
+static INDEX_CONFIG_KEY: OnceLock<String> = OnceLock::new();
 
 static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
     "amdoc-rs1",
@@ -142,10 +155,16 @@ static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
 );
 
 fn init(ctx: &Context, args: &Vec<RedisString>) -> Status {
-    // Parse module-load arguments. Each arg is `key=value`. Currently the
-    // only recognized key is `change-channel-prefix`; unknown keys cause
-    // module load to fail so typos do not silently default.
+    // Parse module-load arguments. Each arg is `key=value`. Recognized keys:
+    //   change-channel-prefix=<prefix>   (default `changes:`; empty disables
+    //                                     publish; see audit #5)
+    //   index-config-key=<key>           (default `am:index:configs`; the
+    //                                     single Hash key all AM.INDEX.*
+    //                                     admin commands operate on; see
+    //                                     audit #12)
+    // Unknown keys cause module load to fail so typos do not silently default.
     let mut prefix: Option<String> = None;
+    let mut index_key: Option<String> = None;
     for arg in args {
         let s = match arg.try_as_str() {
             Ok(s) => s,
@@ -156,6 +175,12 @@ fn init(ctx: &Context, args: &Vec<RedisString>) -> Status {
         };
         if let Some(value) = s.strip_prefix("change-channel-prefix=") {
             prefix = Some(value.to_string());
+        } else if let Some(value) = s.strip_prefix("index-config-key=") {
+            if value.is_empty() {
+                ctx.log_warning("index-config-key must not be empty");
+                return Status::Err;
+            }
+            index_key = Some(value.to_string());
         } else {
             ctx.log_warning(&format!("unknown module argument: {}", s));
             return Status::Err;
@@ -169,11 +194,24 @@ fn init(ctx: &Context, args: &Vec<RedisString>) -> Status {
         );
     }
     let _ = CHANGE_CHANNEL_PREFIX.set(resolved);
+    let _ = INDEX_CONFIG_KEY.set(
+        index_key.unwrap_or_else(|| DEFAULT_INDEX_CONFIG_KEY.to_string()),
+    );
 
     REDIS_AUTOMERGE_TYPE
         .create_data_type(ctx.ctx)
         .map(|_| Status::Ok)
         .unwrap_or(Status::Err)
+}
+
+/// Returns the resolved index-config storage key for this module load.
+/// Falls back to `DEFAULT_INDEX_CONFIG_KEY` if init hasn't run yet (which
+/// happens only in unit tests where `init` is bypassed).
+pub fn index_config_key() -> &'static str {
+    INDEX_CONFIG_KEY
+        .get()
+        .map(|s| s.as_str())
+        .unwrap_or(DEFAULT_INDEX_CONFIG_KEY)
 }
 
 /// Helper function to parse a RedisString as UTF-8 with a custom error message.
@@ -1266,19 +1304,39 @@ fn try_update_search_index(ctx: &Context, key_name: &str, client: &RedisAutomerg
     }
 }
 
+/// Validate that the operator-supplied store-key matches the one this module
+/// load is configured to use. Mismatches are rejected so a misrouted admin
+/// call can't silently land in a different Hash that the runtime indexer
+/// will never read. Audit #12.
+fn check_index_store_key(arg: &RedisString) -> Result<(), RedisError> {
+    let supplied = arg
+        .try_as_str()
+        .map_err(|_| RedisError::Str("store-key must be utf-8"))?;
+    let configured = index_config_key();
+    if supplied != configured {
+        return Err(RedisError::String(format!(
+            "store-key must match the module-configured index-config-key ({})",
+            configured
+        )));
+    }
+    Ok(())
+}
+
 fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    if args.len() < 3 {
+    // AM.INDEX.CONFIGURE <store-key> <pattern> [--format <hash|json>] <path>...
+    if args.len() < 4 {
         return Err(RedisError::WrongArity);
     }
+    check_index_store_key(&args[1])?;
 
-    let pattern = args[1].to_string();
+    let pattern = args[2].to_string();
 
     // Parse optional --format flag
     let mut format = index::IndexFormat::Hash; // Default
-    let mut path_start_idx = 2;
+    let mut path_start_idx = 3;
 
-    if args.len() > 3 && args[2].to_string() == "--format" {
-        let format_str = args[3].to_string();
+    if args.len() > 4 && args[3].to_string() == "--format" {
+        let format_str = args[4].to_string();
         format = match format_str.to_lowercase().as_str() {
             "hash" => index::IndexFormat::Hash,
             "json" => index::IndexFormat::Json,
@@ -1286,7 +1344,7 @@ fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
                 "Invalid format '{}'. Must be 'hash' or 'json'", format_str
             ))),
         };
-        path_start_idx = 4;
+        path_start_idx = 5;
     }
 
     // Remaining args are paths
@@ -1304,11 +1362,12 @@ fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_index_enable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    if args.len() != 2 {
+    // AM.INDEX.ENABLE <store-key> <pattern>
+    if args.len() != 3 {
         return Err(RedisError::WrongArity);
     }
-
-    let pattern = args[1].to_string();
+    check_index_store_key(&args[1])?;
+    let pattern = args[2].to_string();
 
     // Load existing config or create new one
     let mut config = IndexConfig::load(ctx, &pattern)?.unwrap_or_else(|| {
@@ -1323,11 +1382,12 @@ fn am_index_enable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_index_disable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    if args.len() != 2 {
+    // AM.INDEX.DISABLE <store-key> <pattern>
+    if args.len() != 3 {
         return Err(RedisError::WrongArity);
     }
-
-    let pattern = args[1].to_string();
+    check_index_store_key(&args[1])?;
+    let pattern = args[2].to_string();
 
     // Load existing config
     if let Some(mut config) = IndexConfig::load(ctx, &pattern)? {
@@ -1340,20 +1400,16 @@ fn am_index_disable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_index_delete(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    if args.len() != 2 {
+    // AM.INDEX.DELETE <store-key> <pattern>
+    if args.len() != 3 {
         return Err(RedisError::WrongArity);
     }
+    check_index_store_key(&args[1])?;
+    let pattern = args[2].to_string();
 
-    let pattern = args[1].to_string();
-    let config_key = format!("am:index:config:{}", pattern);
-    let removed = ctx.call("DEL", &[&ctx.create_string(config_key)])?;
+    let removed = IndexConfig::delete(ctx, &pattern)?;
     index::invalidate_cache();
-
-    // Pass through Redis' integer reply (0 if no such config, 1 if removed).
-    match removed {
-        RedisValue::Integer(n) => Ok(RedisValue::Integer(n)),
-        _ => Ok(RedisValue::Integer(0)),
-    }
+    Ok(RedisValue::Integer(removed))
 }
 
 fn am_index_reindex(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
@@ -1377,11 +1433,16 @@ fn am_index_reindex(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 }
 
 fn am_index_status(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
+    // AM.INDEX.STATUS <store-key> [filter]
     // Optional filter pattern. `*` (default) matches every cached config; any
     // other value is treated as an exact pattern match against the stored
     // config patterns.
-    let filter = if args.len() > 1 {
-        args[1].to_string()
+    if args.len() < 2 || args.len() > 3 {
+        return Err(RedisError::WrongArity);
+    }
+    check_index_store_key(&args[1])?;
+    let filter = if args.len() == 3 {
+        args[2].to_string()
     } else {
         "*".to_string()
     };
@@ -1459,12 +1520,16 @@ redis_module! {
         ["am.appendbool", am_appendbool, "write deny-oom", 1, 1, 1, AclCategory::Write],
         ["am.listlen", am_listlen, "readonly", 1, 1, 1, AclCategory::Read],
         ["am.maplen", am_maplen, "readonly", 1, 1, 1, AclCategory::Read],
-        ["am.index.configure", am_index_configure, "write", 0, 0, 0, AclCategory::Write],
-        ["am.index.enable", am_index_enable, "write", 0, 0, 0, AclCategory::Write],
-        ["am.index.disable", am_index_disable, "write", 0, 0, 0, AclCategory::Write],
-        ["am.index.delete", am_index_delete, "write", 0, 0, 0, AclCategory::Write],
+        // The am.index.* admin commands all take the index-config storage
+        // key as args[1] (audit #12). Declaring it as the keyspec lets ACLs
+        // like `~am:index:configs` apply, and routes every admin op to a
+        // single shard in cluster mode.
+        ["am.index.configure", am_index_configure, "write", 1, 1, 1, AclCategory::Write],
+        ["am.index.enable", am_index_enable, "write", 1, 1, 1, AclCategory::Write],
+        ["am.index.disable", am_index_disable, "write", 1, 1, 1, AclCategory::Write],
+        ["am.index.delete", am_index_delete, "write", 1, 1, 1, AclCategory::Write],
         ["am.index.reindex", am_index_reindex, "write", 1, 1, 1, AclCategory::Write],
-        ["am.index.status", am_index_status, "readonly", 0, 0, 0, AclCategory::Read],
+        ["am.index.status", am_index_status, "readonly", 1, 1, 1, AclCategory::Read],
     ],
 }
 

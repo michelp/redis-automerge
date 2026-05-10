@@ -14,21 +14,20 @@ echo "Test 1: Configure indexing for a pattern..."
 redis-cli -h "$HOST" del searchdoc1 > /dev/null
 redis-cli -h "$HOST" am.new searchdoc1 > /dev/null
 # Configure indexing for article:* pattern with title and content paths
-result=$(redis-cli -h "$HOST" am.index.configure "article:*" title content)
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "article:*" title content)
 assert_equals "$result" "OK"
 echo "   ✓ Index configuration created"
 
 # Test 2: Verify configuration is saved
 echo "Test 2: Verify configuration is saved..."
-# Check that configuration key exists
-exists=$(redis-cli -h "$HOST" exists "am:index:config:article:*")
+# All configs now live in a single Hash (audit #12): key=am:index:configs,
+# field=<pattern>, value=JSON-serialized {enabled, paths, format}.
+exists=$(redis-cli -h "$HOST" exists "am:index:configs")
 assert_equals "$exists" "1"
-# Check enabled field
-enabled=$(redis-cli -h "$HOST" hget "am:index:config:article:*" enabled)
-assert_equals "$enabled" "1"
-# Check paths field
-paths=$(redis-cli -h "$HOST" hget "am:index:config:article:*" paths)
-assert_equals "$paths" "title,content"
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "article:*")
+echo "$serialized" | grep -q '"enabled":true'
+echo "$serialized" | grep -q '"title"'
+echo "$serialized" | grep -q '"content"'
 echo "   ✓ Configuration persisted correctly"
 
 # Test 3: Automatic index creation on PUTTEXT
@@ -60,7 +59,7 @@ echo "   ✓ Shadow Hash updated on field modification"
 
 # Test 5: Nested path indexing
 echo "Test 5: Nested path indexing..."
-redis-cli -h "$HOST" am.index.configure "user:*" name profile.bio profile.location > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "user:*" name profile.bio profile.location > /dev/null
 redis-cli -h "$HOST" del "user:alice" > /dev/null
 redis-cli -h "$HOST" am.new "user:alice" > /dev/null
 redis-cli -h "$HOST" am.puttext "user:alice" name "Alice" > /dev/null
@@ -79,11 +78,11 @@ echo "   ✓ Nested paths indexed correctly (dots replaced with underscores)"
 
 # Test 6: AM.INDEX.DISABLE command
 echo "Test 6: AM.INDEX.DISABLE command..."
-result=$(redis-cli -h "$HOST" am.index.disable "user:*")
+result=$(redis-cli -h "$HOST" am.index.disable am:index:configs "user:*")
 assert_equals "$result" "OK"
-# Check that enabled field is now 0
-enabled=$(redis-cli -h "$HOST" hget "am:index:config:user:*" enabled)
-assert_equals "$enabled" "0"
+# Confirm enabled flipped to false in the serialized config (audit #12).
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "user:*")
+echo "$serialized" | grep -q '"enabled":false'
 # Update document - shadow Hash should NOT update
 redis-cli -h "$HOST" am.puttext "user:alice" name "Alice Updated" > /dev/null
 name=$(redis-cli -h "$HOST" --raw hget "am:idx:user:alice" name)
@@ -92,11 +91,10 @@ echo "   ✓ Disabled index does not update"
 
 # Test 7: AM.INDEX.ENABLE command
 echo "Test 7: AM.INDEX.ENABLE command..."
-result=$(redis-cli -h "$HOST" am.index.enable "user:*")
+result=$(redis-cli -h "$HOST" am.index.enable am:index:configs "user:*")
 assert_equals "$result" "OK"
-# Check that enabled field is now 1
-enabled=$(redis-cli -h "$HOST" hget "am:index:config:user:*" enabled)
-assert_equals "$enabled" "1"
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "user:*")
+echo "$serialized" | grep -q '"enabled":true'
 # Update document - shadow Hash should now update
 redis-cli -h "$HOST" am.puttext "user:alice" name "Alice Re-enabled" > /dev/null
 name=$(redis-cli -h "$HOST" --raw hget "am:idx:user:alice" name)
@@ -111,11 +109,11 @@ redis-cli -h "$HOST" am.new "article:456" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:456" title "Pre-index Article" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:456" content "Created before indexing" > /dev/null
 # Disable indexing temporarily
-redis-cli -h "$HOST" am.index.disable "article:*" > /dev/null
+redis-cli -h "$HOST" am.index.disable am:index:configs "article:*" > /dev/null
 # Update the document (should not create shadow Hash)
 redis-cli -h "$HOST" am.puttext "article:456" title "Updated Title" > /dev/null
 # Re-enable and reindex
-redis-cli -h "$HOST" am.index.enable "article:*" > /dev/null
+redis-cli -h "$HOST" am.index.enable am:index:configs "article:*" > /dev/null
 result=$(redis-cli -h "$HOST" am.index.reindex "article:456")
 assert_equals "$result" "1"
 # Check shadow Hash has current values
@@ -127,7 +125,7 @@ echo "   ✓ REINDEX command rebuilds shadow Hash"
 
 # Test 9: AM.INDEX.STATUS command
 echo "Test 9: AM.INDEX.STATUS command..."
-status=$(redis-cli -h "$HOST" am.index.status "article:*")
+status=$(redis-cli -h "$HOST" am.index.status am:index:configs "article:*")
 # Status should contain pattern, enabled, and paths
 echo "$status" | grep -q "article:\*"
 echo "$status" | grep -q "enabled"
@@ -164,7 +162,7 @@ echo "   ✓ FROMJSON triggers automatic indexing"
 # Test 12: Wildcard pattern matching
 echo "Test 12: Wildcard pattern matching..."
 # Configure indexing for any key
-redis-cli -h "$HOST" am.index.configure "*" name > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "*" name > /dev/null
 redis-cli -h "$HOST" del "anykey" > /dev/null
 redis-cli -h "$HOST" am.new "anykey" > /dev/null
 redis-cli -h "$HOST" am.puttext "anykey" name "Wildcard Match" > /dev/null
@@ -179,7 +177,7 @@ echo "   ✓ Wildcard pattern (*) matches all keys"
 echo "Test 13: Empty fields not indexed..."
 # Clean up wildcard config from previous test using AM.INDEX.DELETE so the
 # in-memory config cache is invalidated alongside the underlying Redis Hash.
-redis-cli -h "$HOST" am.index.delete "*" > /dev/null
+redis-cli -h "$HOST" am.index.delete am:index:configs "*" > /dev/null
 redis-cli -h "$HOST" del "article:999" > /dev/null
 redis-cli -h "$HOST" am.new "article:999" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:999" title "Only Title" > /dev/null
@@ -218,7 +216,7 @@ echo "   ✓ AM.LOAD automatically populates shadow index"
 
 # Test 15: Multiple pattern configurations
 echo "Test 15: Multiple pattern configurations..."
-redis-cli -h "$HOST" am.index.configure "blog:*" title body tags > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "blog:*" title body tags > /dev/null
 redis-cli -h "$HOST" del "blog:post1" > /dev/null
 redis-cli -h "$HOST" am.new "blog:post1" > /dev/null
 redis-cli -h "$HOST" am.puttext "blog:post1" title "Blog Post" > /dev/null
@@ -243,7 +241,7 @@ echo "   ✓ Multiple patterns can coexist"
 # this test mutates text via SPLICETEXT and PUTDIFF (which previously did not
 # trigger indexing) and asserts the shadow Hash reflects the new content.
 echo "Test 15b: Text mutations via non-PUTTEXT commands update the index..."
-redis-cli -h "$HOST" am.index.configure "audit11:*" body > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "audit11:*" body > /dev/null
 redis-cli -h "$HOST" del "audit11:doc" > /dev/null
 redis-cli -h "$HOST" am.new "audit11:doc" > /dev/null
 redis-cli -h "$HOST" am.puttext "audit11:doc" body "hello world" > /dev/null
@@ -269,6 +267,19 @@ assert_equals "$v" "hello diff"
 
 echo "   ✓ SPLICETEXT/PUTDIFF/MARKCREATE keep the shadow index in sync"
 
+# Test 15c: Audit #12 regression — admin commands reject a store-key that
+# does not match the module-load-configured index-config-key. This is what
+# makes the keyspec/ACL/cluster fix safe: a misrouted call would otherwise
+# silently land in a Hash the runtime indexer never reads.
+echo "Test 15c: Wrong store-key is rejected..."
+mismatch=$(redis-cli -h "$HOST" am.index.configure am:index:wrong "audit12:*" body 2>&1)
+echo "$mismatch" | grep -qi "store-key must match"
+mismatch=$(redis-cli -h "$HOST" am.index.status am:index:wrong 2>&1)
+echo "$mismatch" | grep -qi "store-key must match"
+mismatch=$(redis-cli -h "$HOST" am.index.delete am:index:wrong "audit12:*" 2>&1)
+echo "$mismatch" | grep -qi "store-key must match"
+echo "   ✓ Mismatched store-key returns an explicit error"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available
@@ -283,7 +294,7 @@ fi
 redis-cli -h "$HOST" ft.dropindex idx:test_articles 2>/dev/null || true
 # Create fresh test articles
 redis-cli -h "$HOST" del "article:search1" "article:search2" "article:search3" "article:search4" > /dev/null
-redis-cli -h "$HOST" am.index.configure "article:*" title content author category > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "article:*" title content author category > /dev/null
 redis-cli -h "$HOST" am.new "article:search1" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:search1" title "Redis CRDT Tutorial" > /dev/null
 redis-cli -h "$HOST" am.puttext "article:search1" content "Learn about Conflict-free Replicated Data Types in Redis" > /dev/null

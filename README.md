@@ -1208,16 +1208,27 @@ The module supports two indexing formats:
 
 ### Commands
 
+> **Note on the `store-key` argument.** Every `AM.INDEX.*` admin command takes
+> the index-config storage key as its first argument. All per-pattern
+> configuration is stored as fields of a single Redis Hash at that key. The
+> default name is `am:index:configs` and it can be overridden at module load
+> with `--loadmodule .../redis-automerge.so index-config-key=<name>`. The
+> store-key passed to each admin command must match the module-load value or
+> the command returns an error. This makes ACL rules like
+> `~am:index:configs +am.index.*` enforceable, and routes every admin
+> operation to a single shard in Redis Cluster.
+
 #### AM.INDEX.CONFIGURE
 
 Configure indexing for a key pattern.
 
 **Syntax:**
 ```
-AM.INDEX.CONFIGURE pattern [--format hash|json] path [path ...]
+AM.INDEX.CONFIGURE store-key pattern [--format hash|json] path [path ...]
 ```
 
 **Parameters:**
+- `store-key`: The index-config storage key (default `am:index:configs`)
 - `pattern`: Key pattern to match (e.g., `"article:*"`, `"user:*"`)
 - `--format`: Index format, either `hash` (default) or `json`
 - `path`: One or more paths to extract from documents
@@ -1227,19 +1238,19 @@ AM.INDEX.CONFIGURE pattern [--format hash|json] path [path ...]
 Hash format (default):
 ```bash
 # Index title and content fields as Hash
-AM.INDEX.CONFIGURE "article:*" title content author.name
+AM.INDEX.CONFIGURE am:index:configs "article:*" title content author.name
 
 # Explicit Hash format
-AM.INDEX.CONFIGURE "user:*" --format hash name email profile.bio
+AM.INDEX.CONFIGURE am:index:configs "user:*" --format hash name email profile.bio
 ```
 
 JSON format (requires RedisJSON):
 ```bash
 # Index as JSON document with nested structure preserved
-AM.INDEX.CONFIGURE "product:*" --format json title price description tags
+AM.INDEX.CONFIGURE am:index:configs "product:*" --format json title price description tags
 
 # Index with nested paths - creates nested JSON structure
-AM.INDEX.CONFIGURE "book:*" --format json title author.name author.country price
+AM.INDEX.CONFIGURE am:index:configs "book:*" --format json title author.name author.country price
 ```
 
 #### AM.INDEX.ENABLE
@@ -1248,12 +1259,12 @@ Enable indexing for a previously configured pattern.
 
 **Syntax:**
 ```
-AM.INDEX.ENABLE pattern
+AM.INDEX.ENABLE store-key pattern
 ```
 
 **Example:**
 ```bash
-AM.INDEX.ENABLE "article:*"
+AM.INDEX.ENABLE am:index:configs "article:*"
 ```
 
 #### AM.INDEX.DISABLE
@@ -1262,12 +1273,12 @@ Temporarily disable indexing for a pattern (without removing the configuration).
 
 **Syntax:**
 ```
-AM.INDEX.DISABLE pattern
+AM.INDEX.DISABLE store-key pattern
 ```
 
 **Example:**
 ```bash
-AM.INDEX.DISABLE "article:*"
+AM.INDEX.DISABLE am:index:configs "article:*"
 ```
 
 #### AM.INDEX.REINDEX
@@ -1292,16 +1303,16 @@ Show indexing configuration for one or all patterns.
 
 **Syntax:**
 ```
-AM.INDEX.STATUS [pattern]
+AM.INDEX.STATUS store-key [pattern]
 ```
 
 **Example:**
 ```bash
 # Show all configurations
-AM.INDEX.STATUS
+AM.INDEX.STATUS am:index:configs
 
 # Show specific pattern
-AM.INDEX.STATUS "article:*"
+AM.INDEX.STATUS am:index:configs "article:*"
 ```
 
 ### Hash vs JSON Format
@@ -1326,7 +1337,7 @@ AM.INDEX.STATUS "article:*"
 
 **Example:**
 ```bash
-AM.INDEX.CONFIGURE "article:*" title content author.name
+AM.INDEX.CONFIGURE am:index:configs "article:*" title content author.name
 
 # Creates Hash like:
 # HGETALL am:idx:article:123
@@ -1363,7 +1374,7 @@ AM.INDEX.CONFIGURE "article:*" title content author.name
 
 **Example:**
 ```bash
-AM.INDEX.CONFIGURE "product:*" --format json title price tags
+AM.INDEX.CONFIGURE am:index:configs "product:*" --format json title price tags
 
 # Creates JSON document like:
 # JSON.GET am:idx:product:laptop
@@ -1380,7 +1391,7 @@ AM.INDEX.CONFIGURE "product:*" --format json title price tags
 
 ```bash
 # 1. Configure indexing for article keys
-AM.INDEX.CONFIGURE "article:*" title content author tags
+AM.INDEX.CONFIGURE am:index:configs "article:*" title content author tags
 
 # 2. Create some articles
 AM.NEW article:1
@@ -1411,7 +1422,7 @@ FT.SEARCH idx:articles "real-time Redis"
 # Returns: article:2
 
 # 5. Check indexing status
-AM.INDEX.STATUS "article:*"
+AM.INDEX.STATUS am:index:configs "article:*"
 # Output:
 # pattern: article:*
 # enabled: true
@@ -1422,7 +1433,7 @@ AM.INDEX.STATUS "article:*"
 
 ```bash
 # 1. Configure JSON indexing for product keys
-AM.INDEX.CONFIGURE "product:*" --format json title price inStock tags description
+AM.INDEX.CONFIGURE am:index:configs "product:*" --format json title price inStock tags description
 
 # 2. Create some products
 AM.NEW product:laptop
@@ -1483,7 +1494,7 @@ FT.SEARCH idx:products "@tags:{portable} @price:[0 1500]"
 
 ```bash
 # Configure indexing with nested paths
-AM.INDEX.CONFIGURE "book:*" --format json title author.name author.country publisher.name price
+AM.INDEX.CONFIGURE am:index:configs "book:*" --format json title author.name author.country publisher.name price
 
 # Create a book
 AM.NEW book:rust101

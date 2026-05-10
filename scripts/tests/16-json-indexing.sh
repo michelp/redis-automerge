@@ -28,14 +28,14 @@ echo "Test 1: Configure JSON indexing with --format json..."
 redis-cli -h "$HOST" del jsondoc1 > /dev/null
 redis-cli -h "$HOST" am.new jsondoc1 > /dev/null
 # Configure JSON indexing for product:* pattern
-result=$(redis-cli -h "$HOST" am.index.configure "product:*" --format json title price description)
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "product:*" --format json title price description)
 assert_equals "$result" "OK"
 echo "   ✓ JSON index configuration created"
 
 # Test 2: Verify JSON format is saved in configuration
 echo "Test 2: Verify JSON format persisted..."
-format=$(redis-cli -h "$HOST" hget "am:index:config:product:*" format)
-assert_equals "$format" "json"
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "product:*")
+echo "$serialized" | grep -q '"format":"json"'
 echo "   ✓ JSON format persisted correctly"
 
 # Test 3: Automatic JSON document creation on PUTTEXT
@@ -63,7 +63,7 @@ echo "   ✓ JSON document has correct structure and types"
 
 # Test 5: Nested path indexing with JSON
 echo "Test 5: Nested path JSON indexing..."
-redis-cli -h "$HOST" am.index.configure "book:*" --format json title author.name author.country price > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "book:*" --format json title author.name author.country price > /dev/null
 redis-cli -h "$HOST" del "book:rust101" > /dev/null
 redis-cli -h "$HOST" am.new "book:rust101" > /dev/null
 redis-cli -h "$HOST" am.puttext "book:rust101" title "Rust Programming" > /dev/null
@@ -80,7 +80,7 @@ echo "   ✓ Nested JSON structure preserved"
 
 # Test 6: Array/List indexing with JSON
 echo "Test 6: Array indexing with JSON format..."
-redis-cli -h "$HOST" am.index.configure "post:*" --format json title tags views > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "post:*" --format json title tags views > /dev/null
 redis-cli -h "$HOST" del "post:123" > /dev/null
 redis-cli -h "$HOST" am.new "post:123" > /dev/null
 redis-cli -h "$HOST" am.puttext "post:123" title "Introduction to CRDTs" > /dev/null
@@ -101,7 +101,7 @@ echo "   ✓ Arrays indexed correctly in JSON"
 
 # Test 7: Type preservation (bool, double, int)
 echo "Test 7: Type preservation in JSON..."
-redis-cli -h "$HOST" am.index.configure "config:*" --format json enabled timeout maxRetries rate > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "config:*" --format json enabled timeout maxRetries rate > /dev/null
 redis-cli -h "$HOST" del "config:api" > /dev/null
 redis-cli -h "$HOST" am.new "config:api" > /dev/null
 redis-cli -h "$HOST" am.putbool "config:api" enabled true > /dev/null
@@ -142,7 +142,7 @@ echo "   ✓ FROMJSON triggers JSON indexing"
 
 # Test 10: AM.INDEX.DISABLE with JSON format
 echo "Test 10: AM.INDEX.DISABLE with JSON format..."
-result=$(redis-cli -h "$HOST" am.index.disable "product:*")
+result=$(redis-cli -h "$HOST" am.index.disable am:index:configs "product:*")
 assert_equals "$result" "OK"
 # Update document - JSON should NOT update
 redis-cli -h "$HOST" am.puttext "product:laptop" title "Should Not Update" > /dev/null
@@ -152,7 +152,7 @@ echo "   ✓ Disabled JSON index does not update"
 
 # Test 11: AM.INDEX.ENABLE and REINDEX with JSON
 echo "Test 11: AM.INDEX.ENABLE and REINDEX with JSON format..."
-result=$(redis-cli -h "$HOST" am.index.enable "product:*")
+result=$(redis-cli -h "$HOST" am.index.enable am:index:configs "product:*")
 assert_equals "$result" "OK"
 result=$(redis-cli -h "$HOST" am.index.reindex "product:laptop")
 assert_equals "$result" "1"
@@ -164,9 +164,9 @@ echo "   ✓ REINDEX rebuilds JSON document"
 # Test 12: Mixed Hash and JSON configurations
 echo "Test 12: Mixed Hash and JSON configurations..."
 # Create Hash-based config
-redis-cli -h "$HOST" am.index.configure "user:*" name email > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "user:*" name email > /dev/null
 # Create JSON-based config
-redis-cli -h "$HOST" am.index.configure "profile:*" --format json username bio preferences.theme > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "profile:*" --format json username bio preferences.theme > /dev/null
 # Test Hash indexing
 redis-cli -h "$HOST" del "user:alice" > /dev/null
 redis-cli -h "$HOST" am.new "user:alice" > /dev/null
@@ -211,7 +211,7 @@ echo "   ✓ Missing fields not included in JSON document"
 
 # Test 15: Complex nested structure with JSON
 echo "Test 15: Complex nested JSON structure..."
-redis-cli -h "$HOST" am.index.configure "service:*" --format json name config.host config.port config.ssl metadata.version metadata.tags > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "service:*" --format json name config.host config.port config.ssl metadata.version metadata.tags > /dev/null
 redis-cli -h "$HOST" del "service:api" > /dev/null
 redis-cli -h "$HOST" am.new "service:api" > /dev/null
 redis-cli -h "$HOST" am.puttext "service:api" name "API Gateway" > /dev/null
@@ -248,7 +248,7 @@ fi
 redis-cli -h "$HOST" ft.dropindex idx:test_products 2>/dev/null || true
 # Create test products with different tags and prices
 redis-cli -h "$HOST" del "product:json1" "product:json2" "product:json3" "product:json4" "product:json5" > /dev/null
-redis-cli -h "$HOST" am.index.configure "product:*" --format json title price inStock tags category > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "product:*" --format json title price inStock tags category > /dev/null
 # Product 1: Laptop with business tags
 redis-cli -h "$HOST" am.new "product:json1" > /dev/null
 redis-cli -h "$HOST" am.puttext "product:json1" title "ThinkPad X1" > /dev/null
@@ -447,7 +447,7 @@ echo "Test 23: RediSearch JSON integration - Nested paths..."
 # Use the book example with nested author structure
 redis-cli -h "$HOST" ft.dropindex idx:test_books 2>/dev/null || true
 redis-cli -h "$HOST" del "book:json1" "book:json2" "book:json3" > /dev/null
-redis-cli -h "$HOST" am.index.configure "book:*" --format json title author.name author.country price > /dev/null
+redis-cli -h "$HOST" am.index.configure am:index:configs "book:*" --format json title author.name author.country price > /dev/null
 # Book 1: USA author
 redis-cli -h "$HOST" am.new "book:json1" > /dev/null
 redis-cli -h "$HOST" am.puttext "book:json1" title "The Rust Programming Language" > /dev/null
