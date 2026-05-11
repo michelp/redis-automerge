@@ -30,13 +30,22 @@ if echo "$result" | grep -qi "error\|ERR"; then
     exit 1
 fi
 
-# Verify result contains patch data (Debug format starts with '[')
-if echo "$result" | grep -q "^\["; then
-    echo "   ✓ Diff from empty to current state returns patch data"
-else
-    echo "   ✗ Result doesn't look like patch data: $result"
+# Audit-#19 regression: response must be parseable JSON, not the Rust
+# Debug repr that the previous implementation produced. We require valid
+# JSON, an array shape, and that any element (if present) has the new
+# {"obj":..., "path":..., "action":{"type":...}} structure.
+if ! echo "$result" | jq -e 'type == "array"' > /dev/null 2>&1; then
+    echo "   ✗ Response is not valid JSON or not an array: $result"
     exit 1
 fi
+# If non-empty, every element must carry the documented action.type tag.
+if [ "$(echo "$result" | jq 'length')" -gt 0 ]; then
+    if ! echo "$result" | jq -e 'all(.[]; .action.type | type == "string")' > /dev/null 2>&1; then
+        echo "   ✗ Patches missing the action.type tag: $result"
+        exit 1
+    fi
+fi
+echo "   ✓ Diff from empty to current state returns parseable JSON"
 
 echo "Test 2: Diff with same state (should be empty)..."
 redis-cli -h "$HOST" del diff_test2 > /dev/null

@@ -81,7 +81,7 @@ pub mod index;
 use std::os::raw::{c_char, c_int, c_void};
 use std::sync::OnceLock;
 
-use automerge::{Change, ChangeHash};
+use automerge::{Change, ChangeHash, ObjId, Patch, PatchAction, Prop, ScalarValue, Value};
 use ext::{RedisAutomergeClient, RedisAutomergeExt};
 use index::IndexConfig;
 #[cfg(not(test))]
@@ -1170,6 +1170,136 @@ fn am_numchanges(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     Ok(RedisValue::Integer(count as i64))
 }
 
+/// Convert an Automerge `Patch` to a stable JSON representation for
+/// AM.GETDIFF. Each patch becomes an object of shape
+/// `{"obj": <id>, "path": [...], "action": {...}}`.
+/// Audit #19 — replaces the previous `format!("{:?}", patches)` Debug repr
+/// which was neither parseable nor stable across automerge releases.
+fn patch_to_json(p: &Patch) -> serde_json::Value {
+    serde_json::json!({
+        "obj": obj_id_to_json(&p.obj),
+        "path": p.path
+            .iter()
+            .map(|(obj, prop)| serde_json::json!({
+                "obj": obj_id_to_json(obj),
+                "prop": prop_to_json(prop),
+            }))
+            .collect::<Vec<_>>(),
+        "action": patch_action_to_json(&p.action),
+    })
+}
+
+fn obj_id_to_json(o: &ObjId) -> serde_json::Value {
+    serde_json::Value::String(o.to_string())
+}
+
+fn prop_to_json(prop: &Prop) -> serde_json::Value {
+    match prop {
+        Prop::Map(s) => serde_json::json!({"key": s}),
+        Prop::Seq(i) => serde_json::json!({"index": i}),
+    }
+}
+
+fn scalar_to_json(s: &ScalarValue) -> serde_json::Value {
+    use base64::{engine::general_purpose, Engine as _};
+    match s {
+        ScalarValue::Str(s) => serde_json::json!({"type": "str", "value": s.to_string()}),
+        ScalarValue::Int(i) => serde_json::json!({"type": "int", "value": i}),
+        ScalarValue::Uint(u) => serde_json::json!({"type": "uint", "value": u}),
+        ScalarValue::F64(f) => match serde_json::Number::from_f64(*f) {
+            Some(n) => serde_json::json!({"type": "f64", "value": n}),
+            None => serde_json::json!({"type": "f64", "value": null}),
+        },
+        ScalarValue::Counter(c) => {
+            serde_json::json!({"type": "counter", "value": i64::from(c)})
+        }
+        ScalarValue::Timestamp(t) => serde_json::json!({"type": "timestamp_ms", "value": t}),
+        ScalarValue::Boolean(b) => serde_json::json!({"type": "bool", "value": b}),
+        ScalarValue::Bytes(b) => serde_json::json!({
+            "type": "bytes",
+            "value": general_purpose::STANDARD.encode(b),
+        }),
+        ScalarValue::Null => serde_json::json!({"type": "null"}),
+        // Forward-compat: a value from a future automerge version we don't
+        // know how to serialize. Surface enough to be diagnosable.
+        ScalarValue::Unknown { type_code, bytes } => serde_json::json!({
+            "type": "unknown",
+            "type_code": type_code,
+            "value": general_purpose::STANDARD.encode(bytes),
+        }),
+    }
+}
+
+fn value_to_json(v: &Value<'_>) -> serde_json::Value {
+    match v {
+        Value::Scalar(s) => scalar_to_json(s.as_ref()),
+        Value::Object(ot) => serde_json::json!({
+            "type": "object",
+            "object_type": format!("{:?}", ot).to_lowercase(),
+        }),
+    }
+}
+
+fn patch_action_to_json(a: &PatchAction) -> serde_json::Value {
+    match a {
+        PatchAction::PutMap { key, value, conflict } => serde_json::json!({
+            "type": "put_map",
+            "key": key,
+            "value": value_to_json(&value.0),
+            "conflict": conflict,
+        }),
+        PatchAction::PutSeq { index, value, conflict } => serde_json::json!({
+            "type": "put_seq",
+            "index": index,
+            "value": value_to_json(&value.0),
+            "conflict": conflict,
+        }),
+        PatchAction::Insert { index, values } => serde_json::json!({
+            "type": "insert",
+            "index": index,
+            "values": values
+                .iter()
+                .map(|(v, _, _)| value_to_json(v))
+                .collect::<Vec<_>>(),
+        }),
+        PatchAction::SpliceText { index, value, .. } => serde_json::json!({
+            "type": "splice_text",
+            "index": index,
+            "value": value.make_string(),
+        }),
+        PatchAction::Increment { prop, value } => serde_json::json!({
+            "type": "increment",
+            "prop": prop_to_json(prop),
+            "value": value,
+        }),
+        PatchAction::Conflict { prop } => serde_json::json!({
+            "type": "conflict",
+            "prop": prop_to_json(prop),
+        }),
+        PatchAction::DeleteMap { key } => serde_json::json!({
+            "type": "delete_map",
+            "key": key,
+        }),
+        PatchAction::DeleteSeq { index, length } => serde_json::json!({
+            "type": "delete_seq",
+            "index": index,
+            "length": length,
+        }),
+        PatchAction::Mark { marks } => serde_json::json!({
+            "type": "mark",
+            "marks": marks
+                .iter()
+                .map(|m| serde_json::json!({
+                    "name": m.name.as_str(),
+                    "value": scalar_to_json(&m.value),
+                    "start": m.start,
+                    "end": m.end,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+    }
+}
+
 fn am_getdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     // AM.GETDIFF <key> BEFORE <hash>... AFTER <hash>...
     // Minimum: AM.GETDIFF key BEFORE AFTER (both empty = compare initial to current)
@@ -1224,10 +1354,12 @@ fn am_getdiff(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     // Get the diff
     let patches = client.get_diff(&before_heads, &after_heads);
 
-    // Serialize patches to JSON
-    // Note: Patch doesn't implement Serialize, so we use Debug formatting
-    // wrapped in a JSON array structure
-    let json = format!("{:?}", patches);
+    // Serialize patches to a stable JSON shape (audit #19). Previously this
+    // used `format!("{:?}", patches)` which produces the Debug repr — not
+    // parseable by clients and not stable across automerge releases.
+    let json_patches: Vec<serde_json::Value> = patches.iter().map(patch_to_json).collect();
+    let json = serde_json::to_string(&serde_json::Value::Array(json_patches))
+        .map_err(|e| RedisError::String(format!("failed to serialize patches: {}", e)))?;
 
     Ok(RedisValue::BulkString(json))
 }
@@ -2753,5 +2885,94 @@ mod tests {
         assert_eq!(loaded.get_int("age").unwrap(), Some(30));
         assert_eq!(loaded.get_timestamp("joined_at").unwrap(), Some(timestamp_ms));
         assert_eq!(loaded.get_bool("active").unwrap(), Some(true));
+    }
+
+    /// Audit #19 regression: AM.GETDIFF must produce stable, parseable JSON
+    /// rather than the Rust `Debug` repr. We construct Patches directly,
+    /// run them through `patch_to_json`, and assert the resulting JSON has
+    /// the documented shape (parseable + has the action type tag and the
+    /// expected per-action fields).
+    #[test]
+    fn patch_to_json_emits_stable_shape() {
+        use automerge::{ObjId, PatchAction, ScalarValue, Value};
+        use std::borrow::Cow;
+
+        // PutMap with a string scalar.
+        let p = Patch {
+            obj: ObjId::Root,
+            path: vec![],
+            action: PatchAction::PutMap {
+                key: "name".to_string(),
+                value: (
+                    Value::Scalar(Cow::Owned(ScalarValue::Str("Alice".into()))),
+                    ObjId::Root,
+                ),
+                conflict: false,
+            },
+        };
+        let j = patch_to_json(&p);
+        assert_eq!(j["action"]["type"], "put_map");
+        assert_eq!(j["action"]["key"], "name");
+        assert_eq!(j["action"]["value"]["type"], "str");
+        assert_eq!(j["action"]["value"]["value"], "Alice");
+        assert_eq!(j["action"]["conflict"], false);
+
+        // Increment with an integer prop.
+        let p = Patch {
+            obj: ObjId::Root,
+            path: vec![],
+            action: PatchAction::Increment {
+                prop: Prop::Map("counter".to_string()),
+                value: 7,
+            },
+        };
+        let j = patch_to_json(&p);
+        assert_eq!(j["action"]["type"], "increment");
+        assert_eq!(j["action"]["value"], 7);
+        assert_eq!(j["action"]["prop"]["key"], "counter");
+
+        // DeleteSeq with positional info.
+        let p = Patch {
+            obj: ObjId::Root,
+            path: vec![],
+            action: PatchAction::DeleteSeq { index: 3, length: 2 },
+        };
+        let j = patch_to_json(&p);
+        assert_eq!(j["action"]["type"], "delete_seq");
+        assert_eq!(j["action"]["index"], 3);
+        assert_eq!(j["action"]["length"], 2);
+
+        // SpliceText surfaces the inserted text as a plain JSON string.
+        use automerge::{ConcreteTextValue, TextEncoding};
+        let p = Patch {
+            obj: ObjId::Root,
+            path: vec![],
+            action: PatchAction::SpliceText {
+                index: 5,
+                value: ConcreteTextValue::new("hello", TextEncoding::Utf8CodeUnit),
+                marks: None,
+            },
+        };
+        let j = patch_to_json(&p);
+        assert_eq!(j["action"]["type"], "splice_text");
+        assert_eq!(j["action"]["index"], 5);
+        assert_eq!(j["action"]["value"], "hello");
+
+        // The whole array round-trips through serde_json::to_string
+        // without losing precision.
+        let arr = serde_json::Value::Array(vec![j]);
+        let s = serde_json::to_string(&arr).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(parsed[0]["action"]["type"], "splice_text");
+    }
+
+    #[test]
+    fn scalar_to_json_rejects_non_finite_doubles_gracefully() {
+        // Non-finite doubles can't be expressed in JSON; the helper must not
+        // panic and must surface a value=null marker so callers can detect
+        // the underlying issue (which audit #15 prevents at write time).
+        let j = scalar_to_json(&ScalarValue::F64(f64::NAN));
+        assert_eq!(j["type"], "f64");
+        assert!(j["value"].is_null());
     }
 }

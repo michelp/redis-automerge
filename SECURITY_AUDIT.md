@@ -640,7 +640,7 @@ each asserts that the document is left untouched (the strict applier
 errors before any `put_text` call). All 17 integration test suites
 pass.
 
-### 19. `AM.GETDIFF` uses Rust Debug formatting for output
+### 19. `AM.GETDIFF` uses Rust Debug formatting for output  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:1131`
 
@@ -651,6 +651,36 @@ let json = format!("{:?}", patches);
 The diff output uses Rust's `Debug` formatting, not a stable parseable format.
 
 **Recommendation:** Implement proper JSON serialization for patches.
+
+**Resolution (2026-05-11):** Replaced `format!("{:?}", patches)` with a
+walker that produces a stable JSON array. Each patch becomes
+`{"obj": <id>, "path": [{"obj":<id>,"prop":...}, ...],
+"action": {"type": "<variant>", ...action-specific fields...}}`. New
+helpers in `lib.rs`: `patch_to_json`, `patch_action_to_json`,
+`value_to_json`, `scalar_to_json`, `prop_to_json`, `obj_id_to_json`.
+Every `PatchAction` variant — `PutMap`, `PutSeq`, `Insert`, `SpliceText`,
+`Increment`, `Conflict`, `DeleteMap`, `DeleteSeq`, `Mark` — is mapped
+explicitly with descriptive field names. Scalar values carry both a
+`type` tag (`"str"`, `"int"`, `"f64"`, `"bool"`, `"counter"`,
+`"timestamp_ms"`, `"bytes"`, `"null"`, `"unknown"`) and the underlying
+value, so clients can dispatch on the type without parsing the value.
+`Bytes` are base64-encoded; `Unknown` (forward-compat values from a
+future automerge version) carries the type code plus base64 bytes for
+diagnosability.
+
+Two new Rust unit tests in `lib.rs#tests`:
+`patch_to_json_emits_stable_shape` constructs `Patch` values directly
+and asserts the resulting JSON has the documented per-variant shape;
+`scalar_to_json_rejects_non_finite_doubles_gracefully` confirms NaN
+surfaces as `{"type":"f64","value":null}` rather than panicking (a
+defense-in-depth complement to audit #15).
+`scripts/tests/12-diff.sh` Test 1 was strengthened from "starts with
+`[`" to "is a valid JSON array, and any element carries an
+`action.type` string" — exercising the actual shape via `jq`.
+
+The output is now also forward-stable: clients can rely on the type
+tags and field names rather than the Rust Debug repr that would change
+silently with any automerge upgrade.
 
 ### 20. `usize` to `i64` casts in marks can overflow
 
