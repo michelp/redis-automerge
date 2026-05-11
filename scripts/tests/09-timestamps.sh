@@ -53,13 +53,13 @@ fi
 echo "Test 5: Timestamp notification..."
 redis-cli -h "$HOST" del notif_ts > /dev/null
 redis-cli -h "$HOST" am.new notif_ts > /dev/null
-test_notification "notif_ts" "am.puttimestamp" "redis-cli -h $HOST am.puttimestamp notif_ts event_time 1704067200000"
+test_notification "notif_ts" "am.puttimestamp" redis-cli -h "$HOST" am.puttimestamp notif_ts event_time 1704067200000
 echo "   ✓ AM.PUTTIMESTAMP emits keyspace notification"
 
 echo "Test 6: Timestamp change publishing..."
 redis-cli -h "$HOST" del change_pub_ts > /dev/null
 redis-cli -h "$HOST" am.new change_pub_ts > /dev/null
-test_change_publication "change_pub_ts" "redis-cli -h $HOST am.puttimestamp change_pub_ts created_at 1704067200000"
+test_change_publication "change_pub_ts" redis-cli -h "$HOST" am.puttimestamp change_pub_ts created_at 1704067200000
 echo "   ✓ AM.PUTTIMESTAMP publishes changes to changes:key channel"
 
 echo "Test 7: Mixed types with timestamps..."

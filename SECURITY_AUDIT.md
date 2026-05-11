@@ -729,11 +729,26 @@ rules. Requires Redis 7.4+ for `RedisModule_AddACLCategory`; on older
 versions the category registration is silently skipped and the
 per-command `@read`/`@write` categories still apply.
 
-### 22. `eval` in test helpers
+### 22. `eval` in test helpers  ✅ RESOLVED 2026-05-11
 
 **File:** `scripts/tests/lib/common.sh:48,80`
 
 `eval "$command"` could be replaced with `"$@"` parameter expansion patterns.
+
+**Resolution.** `test_notification` and `test_change_publication` no longer
+stringify their command argument. Both helpers now take the command and its
+arguments as separate positional parameters and invoke them directly via
+`"$@"`, eliminating the double evaluation (and the resulting injection risk
+from caller-supplied values like `$json` in test 18). All call sites in
+`04-notifications.sh`, `06-change-publishing.sh`, and `09-timestamps.sh`
+were updated to pass arguments verbatim instead of one quoted shell string.
+The two callers that previously relied on shell features — input
+redirection from `/tmp/notif_load.bin` for `AM.LOAD`, and a pipe from
+`echo` for `AM.FROMJSON` — were converted to small wrapper functions
+(`load_notif_test2`, `fromjson_notif`) whose names are passed to the
+helpers. The `scripts/tests/README.md` library documentation was updated
+to describe the new calling convention. Full integration suite (17/17)
+passes under Docker.
 
 ### 23. Missing `set -e` in test runner
 

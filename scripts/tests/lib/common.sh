@@ -29,11 +29,14 @@ assert_equals() {
 }
 
 # Test keyspace notifications
+# Usage: test_notification <key> <expected_event> <cmd> [args...]
+# The command is invoked directly via "$@"; no shell re-parsing occurs.
+# To run a pipeline or use redirection, define a wrapper function in the
+# caller and pass its name as <cmd>.
 test_notification() {
     local key=$1
     local expected_event=$2
     shift 2
-    local command="$@"
 
     local output_file="/tmp/notif_test_$$.txt"
 
@@ -44,8 +47,8 @@ test_notification() {
     # Wait for subscription to be ready
     sleep 0.3
 
-    # Run the command
-    eval "$command" > /dev/null 2>&1
+    # Run the command without eval — arguments are passed verbatim
+    "$@" > /dev/null 2>&1
 
     # Wait for notification and subscriber to timeout
     wait $sub_pid 2>/dev/null || true
@@ -64,10 +67,11 @@ test_notification() {
 }
 
 # Test change publication to changes:key channel
+# Usage: test_change_publication <key> <cmd> [args...]
+# The command is invoked directly via "$@"; no shell re-parsing occurs.
 test_change_publication() {
     local key=$1
     shift
-    local command="$@"
 
     local output_file="/tmp/change_pub_$$.txt"
 
@@ -76,8 +80,8 @@ test_change_publication() {
     local sub_pid=$!
     sleep 0.3
 
-    # Execute command
-    eval "$command" > /dev/null 2>&1
+    # Execute command without eval — arguments are passed verbatim
+    "$@" > /dev/null 2>&1
     sleep 0.3
 
     # Kill subscriber

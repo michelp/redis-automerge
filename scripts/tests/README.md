@@ -141,8 +141,8 @@ The `lib/common.sh` file provides shared utilities:
 ### Functions
 
 - `assert_equals(actual, expected, [description])` - Assert equality with helpful error messages
-- `test_notification(key, event, command)` - Test keyspace notifications
-- `test_change_publication(key, command)` - Test change publication to pub/sub
+- `test_notification(key, event, cmd, [args...])` - Test keyspace notifications. The command is invoked directly via `"$@"` (no `eval`); pass each argument separately. For pipelines or redirections, wrap the call in a helper function and pass its name as `cmd`.
+- `test_change_publication(key, cmd, [args...])` - Test change publication to pub/sub. Same calling convention as `test_notification`.
 - `setup_test_env()` - Initialize test environment
 - `print_section(title)` - Print formatted section header
 
