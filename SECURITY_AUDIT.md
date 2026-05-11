@@ -796,7 +796,7 @@ Verified end-to-end by building the image and running `docker compose up
 -d redis` — `docker inspect` reports `"Status":"healthy"` within the
 start-period. Full Docker integration suite (17/17) still passes.
 
-### 25. `IndexConfig::matches_pattern` is not Redis-glob-compatible
+### 25. `IndexConfig::matches_pattern` is not Redis-glob-compatible  ✅ RESOLVED 2026-05-11
 
 **File:** `index.rs:196-246`
 
@@ -809,6 +809,28 @@ authorization-relevant divergence between save-time and match-time semantics.
 
 **Recommendation:** Use a glob crate that mirrors Redis semantics, or
 explicitly reject non-`*` wildcards at configure time.
+
+**Resolution.** Took the second option: rather than vendor a full Redis-glob
+implementation, the supported subset is now loud at configure-time. A new
+`index::validate_pattern` helper (see `index.rs`) rejects patterns that are
+empty or contain `?`, `[`, `]`, or `\` — the Redis-glob metacharacters the
+in-tree `matches_pattern` does not implement. The check is wired into
+`am_index_configure` and into the auto-create branch of `am_index_enable`
+(both of which create new configs); `disable`/`delete` deliberately remain
+permissive so users can clean up any stale invalid entries that predate the
+gate. (Note: the original snippet about `KEYS am:index:config:*` is moot in
+the current tree — `find_matching_config` was already refactored to a
+cached `HGETALL` against a single store key in the audit-#12 work, so
+there is no longer a save-time-vs-match-time glob mismatch path; the
+remaining authentic concern was the silent client-side mismatch this fix
+addresses.) The matcher's doc-comment now states the supported subset
+explicitly. Tests: two new unit tests in `index::tests` (`test_validate_
+pattern_accepts_star_and_literals`, `test_validate_pattern_rejects_unsupported_
+globs`) plus a new integration block "Test 15g: Unsupported glob
+metacharacters are rejected" in `scripts/tests/15-search-indexing.sh` that
+exercises CONFIGURE, ENABLE, and the still-permissive DELETE. Full unit
+suite (4/4 index tests pass; 0 failed in the wider `cargo test --lib`) and
+Docker integration suite (17/17) green.
 
 ### 26. `RedisModule_EmitAOF.unwrap()` can panic during AOF rewrite
 

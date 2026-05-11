@@ -381,6 +381,33 @@ send_resp_binary 'DEL' 'binkey:\xff\xfd'
 redis-cli -h "$HOST" am.index.delete am:index:configs "*" > /dev/null
 echo "   ✓ Non-UTF8 keys skip indexing; no shadow collision"
 
+# Test 15g: Audit #25 — patterns with Redis-glob metacharacters that the
+# in-tree matcher does not implement must be rejected at configure-time,
+# so misconfigurations fail loudly rather than silently never matching.
+echo "Test 15g: Unsupported glob metacharacters are rejected..."
+for bad in 'user?' 'user[12]:*' 'tag\:*' ''; do
+    out=$(redis-cli -h "$HOST" am.index.configure am:index:configs "$bad" title 2>&1)
+    if echo "$out" | grep -qi 'error\|unsupported\|must not be empty'; then
+        :
+    else
+        echo "   ✗ pattern '$bad' was not rejected (got: $out)"
+        exit 1
+    fi
+done
+# Same gate must apply to ENABLE's auto-create branch.
+out=$(redis-cli -h "$HOST" am.index.enable am:index:configs 'user[12]:*' 2>&1)
+echo "$out" | grep -qi 'error\|unsupported' || {
+    echo "   ✗ ENABLE accepted unsupported pattern (got: $out)"
+    exit 1
+}
+# DELETE remains permissive so users can clean up any stale invalid entries.
+redis-cli -h "$HOST" am.index.delete am:index:configs 'user[12]:*' > /dev/null
+# Valid patterns still pass.
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "valid:*" title)
+assert_equals "$result" "OK"
+redis-cli -h "$HOST" am.index.delete am:index:configs "valid:*" > /dev/null
+echo "   ✓ Unsupported glob metacharacters rejected at configure/enable"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available

@@ -1535,6 +1535,10 @@ fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     check_index_store_key(&args[1])?;
 
     let pattern = args[2].to_string();
+    // Audit #25: reject patterns that use Redis-glob metacharacters our
+    // in-tree matcher does not implement, so misconfigurations fail loudly
+    // rather than silently never matching.
+    index::validate_pattern(&pattern)?;
 
     // Parse optional --format flag
     let mut format = index::IndexFormat::Hash; // Default
@@ -1573,6 +1577,9 @@ fn am_index_enable(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     }
     check_index_store_key(&args[1])?;
     let pattern = args[2].to_string();
+    // Audit #25: ENABLE auto-creates an empty IndexConfig when the pattern
+    // is unknown, so the same pattern gate must apply here as in CONFIGURE.
+    index::validate_pattern(&pattern)?;
 
     // Load existing config or create new one
     let mut config = IndexConfig::load(ctx, &pattern)?.unwrap_or_else(|| {

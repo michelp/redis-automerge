@@ -204,6 +204,30 @@ pub fn list_configs(ctx: &Context) -> RedisResult<Vec<IndexConfig>> {
         .unwrap_or_default())
 }
 
+/// Reject patterns that use Redis-glob metacharacters the in-tree matcher
+/// does not implement. The matcher in [`IndexConfig::matches_pattern`] only
+/// honors `*`; if a user configures `user[12]:*` expecting Redis-style glob
+/// semantics, the match would silently fail. Rather than vendor a full glob
+/// grammar, this gate makes the supported subset loud at configure-time.
+/// Audit #25.
+///
+/// Returns `Err` if `pattern` is empty or contains `?`, `[`, `]`, or `\`.
+pub fn validate_pattern(pattern: &str) -> Result<(), RedisError> {
+    if pattern.is_empty() {
+        return Err(RedisError::Str("index pattern must not be empty"));
+    }
+    for c in pattern.chars() {
+        if matches!(c, '?' | '[' | ']' | '\\') {
+            return Err(RedisError::String(format!(
+                "index pattern {:?} contains unsupported glob metacharacter {:?}; \
+                 only '*' is supported (audit #25)",
+                pattern, c
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Format for shadow index documents
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IndexFormat {
@@ -366,7 +390,15 @@ impl IndexConfig {
         Ok(None)
     }
 
-    /// Check if a key matches a pattern (supports * wildcard)
+    /// Check if a key matches a pattern.
+    ///
+    /// Only the `*` wildcard is honored — `?`, `[abc]`, and `\` escapes from
+    /// Redis-style glob syntax are NOT supported. Patterns containing those
+    /// metacharacters are rejected at configure-time by [`validate_pattern`]
+    /// so callers never reach this function with an unsupported pattern
+    /// (audit #25). Pre-existing stored patterns from before that gate was
+    /// added are still tolerated by [`deserialize`] and will simply fail to
+    /// match the way they always did.
     pub(crate) fn matches_pattern(key: &str, pattern: &str) -> bool {
         // Simple wildcard matching (* matches any characters)
         if pattern == "*" {
@@ -710,5 +742,28 @@ mod tests {
     fn test_index_key_generation() {
         assert_eq!(get_index_key("article:123"), "am:idx:article:123");
         assert_eq!(get_index_key("user:abc"), "am:idx:user:abc");
+    }
+
+    #[test]
+    fn test_validate_pattern_accepts_star_and_literals() {
+        assert!(validate_pattern("*").is_ok());
+        assert!(validate_pattern("user:*").is_ok());
+        assert!(validate_pattern("*:tail").is_ok());
+        assert!(validate_pattern("p:*:s").is_ok());
+        assert!(validate_pattern("article:123").is_ok());
+    }
+
+    #[test]
+    fn test_validate_pattern_rejects_unsupported_globs() {
+        // Audit #25: `?`, `[`, `]`, and `\` are Redis-glob metacharacters
+        // that our matcher does not implement, so we reject them at
+        // configure-time instead of silently mismatching.
+        for bad in ["", "user?", "user[12]:*", "tag\\:*", "user[1-9]:foo"] {
+            assert!(
+                validate_pattern(bad).is_err(),
+                "expected pattern {:?} to be rejected",
+                bad
+            );
+        }
     }
 }
