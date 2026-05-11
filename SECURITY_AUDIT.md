@@ -682,7 +682,7 @@ The output is now also forward-stable: clients can rely on the type
 tags and field names rather than the Rust Debug repr that would change
 silently with any automerge upgrade.
 
-### 20. `usize` to `i64` casts in marks can overflow
+### 20. `usize` to `i64` casts in marks can overflow  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:495-496`
 
@@ -691,6 +691,17 @@ negative. Use `try_into()` with error handling. In practice the values
 originate from a `parse_integer()` that returns `i64` and were validated
 non-negative before being cast back — so this is largely theoretical on
 64-bit hosts — but the cast should still be explicit.
+
+**Resolution (2026-05-11):** Introduced a `usize_to_i64` helper in
+`lib.rs` that wraps `i64::try_from(n)` and returns a descriptive
+`RedisError` on overflow. The five `as i64` cast sites — `am_marks`
+(start, end), `am_listlen` (len), `am_maplen` (len), `am_numchanges`
+(count) — all funnel through the helper. No more implicit lossy casts
+in user-facing return paths. Unit test
+`usize_to_i64_rejects_overflow` covers both the pass-through case
+(0, `i64::MAX`) and the overflow case (gated to 64-bit targets where
+the boundary is reachable in principle). All 17 integration test
+suites pass.
 
 ### 21. No Redis ACL command categories
 

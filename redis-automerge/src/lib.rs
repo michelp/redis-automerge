@@ -214,6 +214,21 @@ pub fn index_config_key() -> &'static str {
         .unwrap_or(DEFAULT_INDEX_CONFIG_KEY)
 }
 
+/// Convert a `usize` length/index to a Redis `Integer` (`i64`), erroring
+/// rather than silently wrapping when the value exceeds `i64::MAX`. Audit
+/// #20 — replaces the previous `as i64` casts in `am_marks`, `am_listlen`,
+/// `am_maplen`, and `am_numchanges`. On 64-bit hosts the error branch is
+/// only reachable for absurdly large collections (~9.2e18 elements); on
+/// 32-bit hosts it never fires because `usize` already fits in `i64`.
+fn usize_to_i64(n: usize) -> Result<i64, RedisError> {
+    i64::try_from(n).map_err(|_| {
+        RedisError::String(format!(
+            "value {} exceeds i64::MAX and cannot be returned as a Redis integer",
+            n
+        ))
+    })
+}
+
 /// Helper function to parse a RedisString as UTF-8 with a custom error message.
 fn parse_utf8_field<'a>(s: &'a RedisString, field_name: &str) -> Result<&'a str, RedisError> {
     s.try_as_str()
@@ -640,8 +655,12 @@ fn am_marks(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
             _ => "unknown".to_string(),
         };
         mark_array.push(RedisValue::BulkString(value_str));
-        mark_array.push(RedisValue::Integer(start as i64));
-        mark_array.push(RedisValue::Integer(end as i64));
+        // Audit #20: explicit fallible cast. On 64-bit `usize` can in
+        // principle exceed `i64::MAX`; in practice these positions come
+        // from Automerge text-index space which fits in i64 long before
+        // this becomes reachable, but the cast must not silently wrap.
+        mark_array.push(RedisValue::Integer(usize_to_i64(start)?));
+        mark_array.push(RedisValue::Integer(usize_to_i64(end)?));
 
         result.push(RedisValue::Array(mark_array));
     }
@@ -1042,7 +1061,7 @@ fn am_listlen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .list_len(path)
         .map_err(|e| RedisError::String(e.to_string()))?
     {
-        Some(len) => Ok(RedisValue::Integer(len as i64)),
+        Some(len) => Ok(RedisValue::Integer(usize_to_i64(len)?)),
         None => Ok(RedisValue::Null),
     }
 }
@@ -1061,7 +1080,7 @@ fn am_maplen(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
         .map_len(path)
         .map_err(|e| RedisError::String(e.to_string()))?
     {
-        Some(len) => Ok(RedisValue::Integer(len as i64)),
+        Some(len) => Ok(RedisValue::Integer(usize_to_i64(len)?)),
         None => Ok(RedisValue::Null),
     }
 }
@@ -1167,7 +1186,7 @@ fn am_numchanges(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     let changes = client.get_changes(&have_deps);
     let count = changes.len();
 
-    Ok(RedisValue::Integer(count as i64))
+    Ok(RedisValue::Integer(usize_to_i64(count)?))
 }
 
 /// Convert an Automerge `Patch` to a stable JSON representation for
@@ -2964,6 +2983,26 @@ mod tests {
         let s = serde_json::to_string(&arr).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(parsed[0]["action"]["type"], "splice_text");
+    }
+
+    /// Audit #20: `usize_to_i64` must surface an explicit error rather than
+    /// silently wrap when the value exceeds `i64::MAX`. On 32-bit hosts the
+    /// error path is unreachable (usize fits in i64); on 64-bit hosts it is
+    /// the difference between a misleading negative integer and a clear
+    /// failure.
+    #[test]
+    fn usize_to_i64_rejects_overflow() {
+        // Small values pass through unchanged.
+        assert_eq!(usize_to_i64(0).unwrap(), 0);
+        assert_eq!(usize_to_i64(i64::MAX as usize).unwrap(), i64::MAX);
+        // On 64-bit, anything above i64::MAX overflows. The cfg gate keeps
+        // the test sensible on 32-bit targets where usize already fits.
+        #[cfg(target_pointer_width = "64")]
+        {
+            let too_big = (i64::MAX as usize).wrapping_add(1);
+            let err = usize_to_i64(too_big).unwrap_err();
+            assert!(err.to_string().contains("exceeds i64::MAX"));
+        }
     }
 
     #[test]
