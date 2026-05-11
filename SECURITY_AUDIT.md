@@ -750,13 +750,23 @@ helpers. The `scripts/tests/README.md` library documentation was updated
 to describe the new calling convention. Full integration suite (17/17)
 passes under Docker.
 
-### 23. Missing `set -e` in test runner
+### 23. Missing `set -e` in test runner  ✅ RESOLVED 2026-05-11
 
 **File:** `scripts/tests/run-all-tests.sh:5`
 
 The script uses `set -uo pipefail` but omits `-e`. Spawned subshells running
 individual test files therefore depend on each test file setting its own
 `-e`; if any does not, partial failures may report as passes.
+
+**Resolution.** `scripts/tests/run-all-tests.sh:5` now uses `set -euo
+pipefail`. Per-suite invocation behavior is unchanged because each test
+file is launched as `if bash "$test_file"; then …` — Bash suppresses `-e`
+for commands whose status is consumed by a conditional, so a failing
+suite still falls into the `FAILED_SUITES` branch instead of aborting
+the runner. The new `-e` only catches *runner-body* mistakes (a failing
+`setup_test_env`, `find`, etc.) and any future suite that forgets its
+own `-e`. All 17 test files already set `-euo pipefail` themselves; the
+full Docker test suite (17/17) passes with the change.
 
 ### 24. No Docker HEALTHCHECK
 

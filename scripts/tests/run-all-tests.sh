@@ -2,7 +2,7 @@
 # Main test runner for Redis Automerge Module
 # Executes all test suites in order
 
-set -uo pipefail
+set -euo pipefail
 
 # Color output
 RED='\033[0;31m'
