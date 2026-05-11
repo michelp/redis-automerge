@@ -1556,7 +1556,20 @@ fn check_index_store_key(arg: &RedisString) -> Result<(), RedisError> {
 }
 
 fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
-    // AM.INDEX.CONFIGURE <store-key> <pattern> [--format <hash|json>] <path>...
+    // AM.INDEX.CONFIGURE <store-key> <pattern> [--format <hash|json>] [--] <path>...
+    //
+    // Grammar (audit #28): option parsing is positional and tight.
+    //   * `--format <hash|json>` is recognized only as the first
+    //     positional after <pattern>; any later occurrence is passed
+    //     through as a path argument (after the `--` terminator below).
+    //   * A bare `--` token terminates option parsing — every following
+    //     argument is treated verbatim as a path even if it starts with
+    //     `--`. Use this if you ever need a path literally named
+    //     `--format` (extremely unlikely with the dot/bracket path
+    //     syntax, but the escape hatch makes the grammar total).
+    //   * Path arguments that begin with `--` outside of the terminator
+    //     are rejected, so a typo like `--foramt` surfaces as a clear
+    //     error instead of being silently indexed as a path.
     if args.len() < 4 {
         return Err(RedisError::WrongArity);
     }
@@ -1568,28 +1581,55 @@ fn am_index_configure(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
     // rather than silently never matching.
     index::validate_pattern(&pattern)?;
 
-    // Parse optional --format flag
     let mut format = index::IndexFormat::Hash; // Default
-    let mut path_start_idx = 3;
+    let mut idx = 3;
 
-    if args.len() > 4 && args[3].to_string() == "--format" {
-        let format_str = args[4].to_string();
+    // Optional `--format <value>` flag, only valid in slot 3.
+    if idx < args.len() && args[idx].to_string() == "--format" {
+        idx += 1;
+        if idx >= args.len() {
+            return Err(RedisError::Str(
+                "--format requires a value: 'hash' or 'json'",
+            ));
+        }
+        let format_str = args[idx].to_string();
         format = match format_str.to_lowercase().as_str() {
             "hash" => index::IndexFormat::Hash,
             "json" => index::IndexFormat::Json,
-            _ => return Err(RedisError::String(format!(
-                "Invalid format '{}'. Must be 'hash' or 'json'", format_str
-            ))),
+            _ => {
+                return Err(RedisError::String(format!(
+                    "Invalid format '{}'. Must be 'hash' or 'json'",
+                    format_str
+                )));
+            }
         };
-        path_start_idx = 5;
+        idx += 1;
     }
 
-    // Remaining args are paths
-    if args.len() <= path_start_idx {
-        return Err(RedisError::String("At least one path is required".to_string()));
+    // Optional `--` end-of-options marker (audit #28).
+    let options_terminated = if idx < args.len() && args[idx].to_string() == "--" {
+        idx += 1;
+        true
+    } else {
+        false
+    };
+
+    if idx >= args.len() {
+        return Err(RedisError::Str("At least one path is required"));
     }
 
-    let paths: Vec<String> = args[path_start_idx..].iter().map(|s| s.to_string()).collect();
+    let mut paths: Vec<String> = Vec::with_capacity(args.len() - idx);
+    for raw in &args[idx..] {
+        let p = raw.to_string();
+        if !options_terminated && p.starts_with("--") {
+            return Err(RedisError::String(format!(
+                "unexpected option-like path {:?}; pass `--` before \
+                 paths that legitimately start with `--`",
+                p
+            )));
+        }
+        paths.push(p);
+    }
 
     let config = index::IndexConfig::new_with_format(pattern, paths, format);
     config.save(ctx)?;

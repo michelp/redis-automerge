@@ -408,6 +408,49 @@ assert_equals "$result" "OK"
 redis-cli -h "$HOST" am.index.delete am:index:configs "valid:*" > /dev/null
 echo "   ✓ Unsupported glob metacharacters rejected at configure/enable"
 
+# Test 15h: Audit #28 — AM.INDEX.CONFIGURE option grammar is tight.
+# `--format` only in slot 3, missing value rejected, option-like paths
+# rejected unless `--` precedes them.
+echo "Test 15h: --format / -- option-grammar is explicit..."
+
+# Missing value after --format
+out=$(redis-cli -h "$HOST" am.index.configure am:index:configs "fmt:*" --format 2>&1)
+echo "$out" | grep -qi "requires a value" || {
+    echo "   ✗ missing --format value not rejected (got: $out)"; exit 1; }
+
+# Bad format value
+out=$(redis-cli -h "$HOST" am.index.configure am:index:configs "fmt:*" --format yaml title 2>&1)
+echo "$out" | grep -qi "Invalid format" || {
+    echo "   ✗ invalid --format value not rejected (got: $out)"; exit 1; }
+
+# Typo'd option-like path rejected
+out=$(redis-cli -h "$HOST" am.index.configure am:index:configs "fmt:*" --foramt hash title 2>&1)
+echo "$out" | grep -qi "unexpected option-like path" || {
+    echo "   ✗ --foramt typo not rejected (got: $out)"; exit 1; }
+
+# Option-like path after `--` is accepted as a literal path
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "term:*" -- --weird-path)
+assert_equals "$result" "OK"
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "term:*")
+echo "$serialized" | grep -q '"--weird-path"' || {
+    echo "   ✗ '--' did not preserve literal path (got: $serialized)"; exit 1; }
+redis-cli -h "$HOST" am.index.delete am:index:configs "term:*" > /dev/null
+
+# --format json with -- still works
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "both:*" --format json -- title)
+assert_equals "$result" "OK"
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "both:*")
+echo "$serialized" | grep -q '"format":"json"' || {
+    echo "   ✗ --format json with -- not honored (got: $serialized)"; exit 1; }
+redis-cli -h "$HOST" am.index.delete am:index:configs "both:*" > /dev/null
+
+# Normal --format hash path still works
+result=$(redis-cli -h "$HOST" am.index.configure am:index:configs "norm:*" --format hash title)
+assert_equals "$result" "OK"
+redis-cli -h "$HOST" am.index.delete am:index:configs "norm:*" > /dev/null
+
+echo "   ✓ --format / -- grammar is tight; typos and missing values rejected"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available

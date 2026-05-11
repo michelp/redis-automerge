@@ -881,7 +881,7 @@ storage scheme changed from "one Hash per pattern with three fields" to
 pattern field." `IndexConfig::save` is now a single atomic `HSET` of
 that one field, so partial-write windows are impossible.
 
-### 28. `am.index.configure` `--format` parsing is brittle
+### 28. `am.index.configure` `--format` parsing is brittle  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:1279`
 
@@ -896,6 +896,36 @@ clean validation.
 
 **Recommendation:** Use a small flag parser, or require `--format` only as
 the first positional after the pattern with explicit grammar.
+
+**Resolution.** Took the explicit-grammar option. `am_index_configure` in
+`redis-automerge/src/lib.rs` now documents and enforces the following
+command shape:
+
+```
+AM.INDEX.CONFIGURE <store-key> <pattern> [--format <hash|json>] [--] <path>...
+```
+
+Rules (all enforced by the parser):
+
+1. `--format <value>` is recognized **only** as the first positional after
+   `<pattern>`; later occurrences fall through to path handling (gated by
+   rule 3).
+2. A bare `--` token terminates option parsing — every following argument
+   becomes a literal path, even if it begins with `--`. This is the
+   total-grammar escape hatch for the (extremely unlikely) case of a
+   path that legitimately starts with `--`.
+3. Any path argument that begins with `--` outside of the `--` terminator
+   is rejected with a clear error message, so a typo like `--foramt
+   hash` surfaces immediately instead of being silently indexed as a
+   path. A missing value after `--format` is also rejected explicitly
+   (previous code would just have moved on with the default format).
+
+Integration coverage added in `scripts/tests/15-search-indexing.sh` as
+"Test 15h: --format / -- option-grammar is explicit" — exercises missing
+`--format` value, invalid `--format` value, typo'd `--foramt`, the `--`
+escape hatch for literal `--weird-path`, `--format json -- title`, and
+the plain `--format hash title` happy path. Full Docker integration
+suite (17/17) passes.
 
 ### 29. `IndexConfig` paths are CSV-encoded — fails on commas in path strings
 
