@@ -605,7 +605,7 @@ both. All 17 integration test suites pass.
 
 ## LOW Severity
 
-### 18. Silent data corruption in diff application
+### 18. Silent data corruption in diff application  ✅ RESOLVED 2026-05-11
 
 **Files:** `ext.rs:1420-1425`, `ext.rs:1492-1497`
 
@@ -615,6 +615,30 @@ silently wrong rather than returning an error.
 
 **Recommendation:** Return an error on context mismatch, or at minimum log a
 warning.
+
+**Resolution (2026-05-11):** The two `// try to be lenient` no-ops in the
+`Context` and `Delete` arms (one set in each of `put_diff` and
+`put_diff_with_change`) were replaced with hard error returns. A new
+`DiffError` enum in `ext.rs` carries actionable per-failure-mode
+variants — `ContextMismatch { line_num, expected, actual }`,
+`DeleteMismatch { line_num, expected, actual }`, `UnexpectedEof { line_num,
+op }` — each with a `Display` impl that produces a message like
+`"diff context mismatch at line 1: expected \"DIFFERENT\", found \"Line 1\"
+(the diff was generated against a different base state — re-fetch the
+current text and rebase the diff)"`. The previous handlers returned the
+opaque `AutomergeError::Fail` which would surface as `(error) fail` to
+redis-cli; now the operator sees the offending line and what to do.
+
+Bundled audit #33: `put_diff` and `put_diff_with_change` were fully
+duplicated (60+ lines twice). They now share a single
+`compute_diff_application` helper that produces the resulting text or a
+`DiffError`. The public methods each become four lines (compute → write).
+
+Three regression tests in `scripts/tests/05-text-operations.sh` (Tests
+3a/3b/3c) exercise context mismatch, delete mismatch, and past-EOF, and
+each asserts that the document is left untouched (the strict applier
+errors before any `put_text` call). All 17 integration test suites
+pass.
 
 ### 19. `AM.GETDIFF` uses Rust Debug formatting for output
 
@@ -791,11 +815,18 @@ should delegate to the `_with_change` variant and discard the return value.
 The "convert scalar string to Text object" pattern is copy-pasted across 6+
 functions and should be extracted to a helper.
 
-### 33. `put_diff` / `put_diff_with_change` are fully duplicated
+### 33. `put_diff` / `put_diff_with_change` are fully duplicated  ✅ RESOLVED 2026-05-11
 
 **File:** `ext.rs:1398-1535`
 
 The 60+ line diff application logic is duplicated between two methods.
+
+**Resolution (2026-05-11):** Resolved as a side-effect of #18. Both
+methods now delegate to a single private `compute_diff_application`
+helper that returns either the patched text or a `DiffError`. Each
+public method shrinks to four lines (compute → call `put_text` or
+`put_text_with_change`). The audit-#18 strict check therefore lives in
+exactly one place instead of being copy-pasted.
 
 ### 34. Missing `mem_usage` callback
 

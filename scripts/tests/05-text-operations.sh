@@ -52,6 +52,45 @@ assert_equals "$val" "$expected"
 echo "   ✓ AM.PUTDIFF line deletion works"
 
 # Test AM.SPLICETEXT command
+# Audit-#18 regression: PUTDIFF must reject diffs whose context or delete
+# lines don't match the document's current state. Before the fix, a diff
+# applied against the wrong base state silently produced garbage instead
+# of erroring, so a client racing against a concurrent write could corrupt
+# the document without noticing.
+echo "Test 3a (audit #18): PUTDIFF rejects context mismatch..."
+redis-cli -h "$HOST" del diff_audit18 > /dev/null
+redis-cli -h "$HOST" am.new diff_audit18 > /dev/null
+printf "Line 1\nLine 2\nLine 3\n" | redis-cli -h "$HOST" -x am.puttext diff_audit18 doc > /dev/null
+# This diff claims context line "DIFFERENT" where the doc actually has "Line 1".
+bad_diff=$(printf -- "--- a/doc\n+++ b/doc\n@@ -1,3 +1,3 @@\n DIFFERENT\n-Line 2\n+Line 2 modified\n Line 3\n")
+result=$(printf '%s' "$bad_diff" | redis-cli -h "$HOST" -x am.putdiff diff_audit18 doc 2>&1)
+echo "$result" | grep -qi "context mismatch"
+# Document MUST be unchanged — the strict check rejected the diff cleanly.
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_audit18 doc)
+expected=$(printf "Line 1\nLine 2\nLine 3\n")
+assert_equals "$val" "$expected"
+echo "   ✓ Context mismatch returns error and leaves document untouched"
+
+echo "Test 3b (audit #18): PUTDIFF rejects delete mismatch..."
+# Diff claims to delete "Wrong Line 2" where the doc has "Line 2".
+bad_diff=$(printf -- "--- a/doc\n+++ b/doc\n@@ -1,3 +1,3 @@\n Line 1\n-Wrong Line 2\n+Line 2 modified\n Line 3\n")
+result=$(printf '%s' "$bad_diff" | redis-cli -h "$HOST" -x am.putdiff diff_audit18 doc 2>&1)
+echo "$result" | grep -qi "delete mismatch"
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_audit18 doc)
+assert_equals "$val" "$expected"
+echo "   ✓ Delete mismatch returns error and leaves document untouched"
+
+echo "Test 3c (audit #18): PUTDIFF rejects diff past end of text..."
+# Doc has 3 lines; diff hunk references a 4th. The strict applier hits EOF
+# while looking for the context line.
+bad_diff=$(printf -- "--- a/doc\n+++ b/doc\n@@ -1,4 +1,4 @@\n Line 1\n Line 2\n Line 3\n Line 4\n")
+result=$(printf '%s' "$bad_diff" | redis-cli -h "$HOST" -x am.putdiff diff_audit18 doc 2>&1)
+echo "$result" | grep -qi "past end of text"
+val=$(redis-cli -h "$HOST" --raw am.gettext diff_audit18 doc)
+assert_equals "$val" "$expected"
+echo "   ✓ Past-end diff returns error and leaves document untouched"
+
+# Test AM.SPLICETEXT command
 echo "Test 4: AM.SPLICETEXT with simple replacement..."
 redis-cli -h "$HOST" del splice_test1 > /dev/null
 redis-cli -h "$HOST" am.new splice_test1 > /dev/null

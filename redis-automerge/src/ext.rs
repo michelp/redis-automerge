@@ -60,6 +60,85 @@ enum DiffOp {
     Add(String),
 }
 
+/// Error type returned by `put_diff` / `put_diff_with_change`. Wraps the
+/// generic `AutomergeError` and adds richly-typed variants for diff
+/// application failures so the caller (and ultimately the redis-cli user)
+/// sees an actionable message rather than a silent miscompilation.
+///
+/// Audit #18: previously the diff applier silently swallowed context and
+/// delete mismatches with a `// try to be lenient` no-op, producing
+/// garbage output when a diff was applied against the wrong base state.
+#[derive(Debug)]
+pub enum DiffError {
+    /// An underlying Automerge operation failed (path parse, get_text,
+    /// put_text, etc).
+    Automerge(AutomergeError),
+    /// A context line in the diff (the unchanged surrounding lines that
+    /// disambiguate where the patch applies) did not match the actual
+    /// document text at the corresponding position.
+    ContextMismatch {
+        line_num: usize,
+        expected: String,
+        actual: String,
+    },
+    /// A delete line in the diff did not match the actual line at the
+    /// corresponding position in the document.
+    DeleteMismatch {
+        line_num: usize,
+        expected: String,
+        actual: String,
+    },
+    /// The diff references more lines than the document contains.
+    UnexpectedEof {
+        line_num: usize,
+        op: &'static str,
+    },
+}
+
+impl std::fmt::Display for DiffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DiffError::Automerge(e) => write!(f, "{}", e),
+            DiffError::ContextMismatch {
+                line_num,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "diff context mismatch at line {}: expected {:?}, found {:?} \
+                 (the diff was generated against a different base state — \
+                 re-fetch the current text and rebase the diff)",
+                line_num, expected, actual
+            ),
+            DiffError::DeleteMismatch {
+                line_num,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "diff delete mismatch at line {}: expected to delete {:?}, \
+                 found {:?} (the diff was generated against a different base \
+                 state)",
+                line_num, expected, actual
+            ),
+            DiffError::UnexpectedEof { line_num, op } => write!(
+                f,
+                "diff {} past end of text at line {} (the document is shorter \
+                 than the diff expects)",
+                op, line_num
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DiffError {}
+
+impl From<AutomergeError> for DiffError {
+    fn from(e: AutomergeError) -> Self {
+        DiffError::Automerge(e)
+    }
+}
+
 /// Represents a typed value extracted from an Automerge document
 /// This is used for building JSON index documents with proper types
 #[derive(Debug, Clone, PartialEq)]
@@ -1400,71 +1479,9 @@ impl RedisAutomergeClient {
     /// - The value at path is not text
     /// - The diff cannot be parsed
     /// - The diff cannot be applied to the current text
-    pub fn put_diff(&mut self, path: &str, diff: &str) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        // Get current text
-        let current_text = self.get_text(path)?.ok_or(AutomergeError::Fail)?;
-        let current_lines: Vec<&str> = current_text.lines().collect();
-
-        // Parse the diff
-        let ops = parse_unified_diff(diff)?;
-
-        // Build the new text by applying diff operations
-        let mut new_lines = Vec::new();
-        let mut current_line_idx = 0;
-
-        let mut i = 0;
-        while i < ops.len() {
-            match &ops[i] {
-                DiffOp::Context(line) => {
-                    // Verify context matches (for safety)
-                    if current_line_idx < current_lines.len() {
-                        let current = current_lines[current_line_idx];
-                        if current != line.as_str() {
-                            // Context mismatch - try to be lenient
-                        }
-                        new_lines.push(current.to_string());
-                        current_line_idx += 1;
-                    }
-                }
-                DiffOp::Delete(line) => {
-                    // Skip the deleted line in current text
-                    if current_line_idx < current_lines.len() {
-                        let current = current_lines[current_line_idx];
-                        if current == line.as_str() {
-                            current_line_idx += 1;
-                        }
-                    }
-                }
-                DiffOp::Add(line) => {
-                    // Add the new line
-                    new_lines.push(line.clone());
-                }
-            }
-            i += 1;
-        }
-
-        // Add any remaining lines
-        while current_line_idx < current_lines.len() {
-            new_lines.push(current_lines[current_line_idx].to_string());
-            current_line_idx += 1;
-        }
-
-        // Reconstruct text with newlines
-        let new_text = if current_text.ends_with('\n') {
-            new_lines.join("\n") + "\n"
-        } else {
-            new_lines.join("\n")
-        };
-
-        // Apply the change using put_text
+    pub fn put_diff(&mut self, path: &str, diff: &str) -> Result<(), DiffError> {
+        let new_text = self.compute_diff_application(path, diff)?;
         self.put_text(path, &new_text)?;
-
         Ok(())
     }
 
@@ -1473,70 +1490,89 @@ impl RedisAutomergeClient {
         &mut self,
         path: &str,
         diff: &str,
-    ) -> Result<Option<Vec<u8>>, AutomergeError> {
-        let segments = parse_path(path)?;
+    ) -> Result<Option<Vec<u8>>, DiffError> {
+        let new_text = self.compute_diff_application(path, diff)?;
+        Ok(self.put_text_with_change(path, &new_text)?)
+    }
 
+    /// Shared diff-application core for [`put_diff`] and
+    /// [`put_diff_with_change`] (audit #33 dedup). Returns the resulting text
+    /// after strictly applying the diff against the document's current value
+    /// at `path`. Audit #18: context-line and delete-line mismatches now
+    /// return a `DiffError` with the offending line numbers instead of
+    /// silently producing garbage.
+    fn compute_diff_application(
+        &self,
+        path: &str,
+        diff: &str,
+    ) -> Result<String, DiffError> {
+        let segments = parse_path(path)?;
         if segments.is_empty() {
-            return Err(AutomergeError::Fail);
+            return Err(DiffError::Automerge(AutomergeError::Fail));
         }
 
-        // Get current text
         let current_text = self.get_text(path)?.ok_or(AutomergeError::Fail)?;
         let current_lines: Vec<&str> = current_text.lines().collect();
 
-        // Parse the diff
         let ops = parse_unified_diff(diff)?;
 
-        // Build the new text by applying diff operations
         let mut new_lines = Vec::new();
-        let mut current_line_idx = 0;
-
-        let mut i = 0;
-        while i < ops.len() {
-            match &ops[i] {
+        let mut idx = 0;
+        for op in &ops {
+            match op {
                 DiffOp::Context(line) => {
-                    // Verify context matches (for safety)
-                    if current_line_idx < current_lines.len() {
-                        let current = current_lines[current_line_idx];
-                        if current != line.as_str() {
-                            // Context mismatch - try to be lenient
-                        }
-                        new_lines.push(current.to_string());
-                        current_line_idx += 1;
+                    if idx >= current_lines.len() {
+                        return Err(DiffError::UnexpectedEof {
+                            line_num: idx + 1,
+                            op: "context",
+                        });
                     }
+                    let actual = current_lines[idx];
+                    if actual != line.as_str() {
+                        return Err(DiffError::ContextMismatch {
+                            line_num: idx + 1,
+                            expected: line.clone(),
+                            actual: actual.to_string(),
+                        });
+                    }
+                    new_lines.push(actual.to_string());
+                    idx += 1;
                 }
                 DiffOp::Delete(line) => {
-                    // Skip the deleted line in current text
-                    if current_line_idx < current_lines.len() {
-                        let current = current_lines[current_line_idx];
-                        if current == line.as_str() {
-                            current_line_idx += 1;
-                        }
+                    if idx >= current_lines.len() {
+                        return Err(DiffError::UnexpectedEof {
+                            line_num: idx + 1,
+                            op: "delete",
+                        });
                     }
+                    let actual = current_lines[idx];
+                    if actual != line.as_str() {
+                        return Err(DiffError::DeleteMismatch {
+                            line_num: idx + 1,
+                            expected: line.clone(),
+                            actual: actual.to_string(),
+                        });
+                    }
+                    idx += 1;
                 }
                 DiffOp::Add(line) => {
-                    // Add the new line
                     new_lines.push(line.clone());
                 }
             }
-            i += 1;
         }
 
-        // Add any remaining lines
-        while current_line_idx < current_lines.len() {
-            new_lines.push(current_lines[current_line_idx].to_string());
-            current_line_idx += 1;
+        // Append any trailing lines beyond the diff's last hunk verbatim.
+        while idx < current_lines.len() {
+            new_lines.push(current_lines[idx].to_string());
+            idx += 1;
         }
 
-        // Reconstruct text with newlines
-        let new_text = if current_text.ends_with('\n') {
+        // Preserve the trailing newline iff the original text had one.
+        Ok(if current_text.ends_with('\n') {
             new_lines.join("\n") + "\n"
         } else {
             new_lines.join("\n")
-        };
-
-        // Apply the change using put_text_with_change
-        self.put_text_with_change(path, &new_text)
+        })
     }
 
     /// Creates a new empty list at the specified path.
