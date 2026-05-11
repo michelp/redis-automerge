@@ -832,7 +832,7 @@ exercises CONFIGURE, ENABLE, and the still-permissive DELETE. Full unit
 suite (4/4 index tests pass; 0 failed in the wider `cargo test --lib`) and
 Docker integration suite (17/17) green.
 
-### 26. `RedisModule_EmitAOF.unwrap()` can panic during AOF rewrite
+### 26. `RedisModule_EmitAOF.unwrap()` can panic during AOF rewrite  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:1246`
 
@@ -846,6 +846,23 @@ belongs alongside finding #10.
 
 **Recommendation:** Check the symbol once at module load and refuse to load
 the module rather than crashing during a rewrite.
+
+**Resolution.** Implemented the recommendation: `init()` in
+`redis-automerge/src/lib.rs` now probes `raw::RedisModule_EmitAOF` and
+returns `Status::Err` (with a clear `log_warning`) if the host Redis does
+not export it. This converts a delayed unrecoverable panic — first AOF
+rewrite, e.g. on `BGREWRITEAOF` or Redis's automatic rewrite triggered by
+`auto-aof-rewrite-percentage` — into an operator-facing startup error.
+The `am_aof_rewrite` call site was updated from `.unwrap()` to `.expect()`
+with a diagnostic message explaining that reaching it implies a host ABI
+break (the symbol pointer is populated once at module load and never
+cleared by Redis), and pointing back to this audit item. The
+positive-path verification comes from the existing AOF persistence suite
+(`scripts/tests/10-aof-persistence.sh`), which exercises BGREWRITEAOF
+through DEBUG RESTART — full 17/17 Docker suite passes with the fix. The
+rejection path is not exercised in tests because reproducing it requires
+a Redis build that omits `EmitAOF`, but the logic is a one-line
+`is_none()` check whose correctness is obvious from inspection.
 
 ### 27. `IndexConfig::save` is non-atomic (three sequential HSETs)  ✅ RESOLVED 2026-05-09
 

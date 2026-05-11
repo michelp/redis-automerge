@@ -198,6 +198,23 @@ fn init(ctx: &Context, args: &Vec<RedisString>) -> Status {
         index_key.unwrap_or_else(|| DEFAULT_INDEX_CONFIG_KEY.to_string()),
     );
 
+    // Audit #26: refuse to load against a Redis whose RedisModule_EmitAOF
+    // symbol is unavailable. Our `am_aof_rewrite` callback unwraps that
+    // function pointer, so without this gate an older or stripped host
+    // Redis would abort the server process the first time AOF rewrite
+    // ran (e.g. on BGREWRITEAOF, or the auto-rewrite Redis triggers when
+    // the AOF grows beyond `auto-aof-rewrite-percentage`). Failing module
+    // load here turns an unrecoverable runtime panic into a clear,
+    // operator-facing startup error.
+    if unsafe { raw::RedisModule_EmitAOF }.is_none() {
+        ctx.log_warning(
+            "host Redis does not export RedisModule_EmitAOF; \
+             refusing to load (the module's AOF rewrite callback would \
+             panic on the first BGREWRITEAOF). Audit #26.",
+        );
+        return Status::Err;
+    }
+
     REDIS_AUTOMERGE_TYPE
         .create_data_type(ctx.ctx)
         .map(|_| Status::Ok)
@@ -1487,7 +1504,18 @@ unsafe extern "C" fn am_aof_rewrite(
 
     // Emit: AM.LOAD <key> <binary-data>
     // Format string: "sb" = string (key), binary (data)
-    raw::RedisModule_EmitAOF.unwrap()(
+    //
+    // The `.expect()` below is reachable only if RedisModule_EmitAOF
+    // becomes None *after* module load, which the host Redis never does
+    // — the symbol pointers are populated once at init and never
+    // cleared. Module load already refused (audit #26) on hosts where
+    // this pointer is None, so reaching the panic indicates a
+    // host-side ABI break and is the least-bad outcome.
+    raw::RedisModule_EmitAOF
+        .expect(
+            "RedisModule_EmitAOF was Some at load (audit #26) but None during \
+             AOF rewrite — host Redis ABI invariant violated",
+        )(
         aof,
         b"AM.LOAD\0".as_ptr() as *const c_char,
         b"sb\0".as_ptr() as *const c_char,
