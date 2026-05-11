@@ -886,6 +886,28 @@ require auth on a per-command basis (see the
   Caddy / nginx / Traefik sidecar in any deployment that crosses an
   untrusted network.
 
+### Redis ACL: the `@automerge` category
+
+Every `AM.*` command joins a custom `@automerge` ACL category in addition
+to its built-in `@read` or `@write` category. This lets operators grant
+or revoke the whole AM.* surface as a single group rather than
+enumerating every command:
+
+```redis
+# Full AM.* access (both reads and writes) but no other Redis commands:
+ACL SETUSER am_app on >secret -@all +@automerge ~*
+
+# Read-only AM.* access — intersect @automerge with -@write:
+ACL SETUSER am_viewer on >secret -@all +@automerge -@write ~*
+
+# Revoke AM.* without affecting other access:
+ACL SETUSER existing_user -@automerge
+```
+
+Requires Redis 7.4 or later (which is when `RedisModule_AddACLCategory`
+was added). On older Redis versions the category registration is silently
+skipped; the per-command `@read`/`@write` categories still apply.
+
 ## Path Syntax
 
 The module supports RedisJSON-compatible path syntax:

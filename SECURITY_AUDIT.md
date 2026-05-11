@@ -703,12 +703,31 @@ in user-facing return paths. Unit test
 the boundary is reachable in principle). All 17 integration test
 suites pass.
 
-### 21. No Redis ACL command categories
+### 21. No Redis ACL command categories  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:1414-1462`
 
 Module commands don't declare a custom ACL category. Operators can't
 selectively control read vs. write AM.* commands as a single group.
+
+**Resolution (2026-05-11):** Registered a custom `automerge` ACL
+category via the `acl_categories` block in `redis_module!`. Every
+`AM.*` command now joins this category in addition to its built-in
+`@read` or `@write` category, so operators can grant or revoke the
+whole module surface as one group:
+- `+@automerge` — full AM.* access
+- `-@all +@automerge -@write` — read-only AM.* access (intersection)
+- `-@automerge` — revoke the whole surface in one rule
+
+Verified end-to-end against Redis 7.4.5: `COMMAND INFO am.new` lists
+both `@write` and `@automerge` as ACL categories; a user created with
+`+@automerge` can call `am.new`/`am.puttext`/`am.gettext` but is
+denied `SET`; a user with `-@all +@automerge -@write` can read AM
+documents but is denied `am.puttext` (NOPERM). Documented in
+README.md under "Redis ACL: the `@automerge` category" with example
+rules. Requires Redis 7.4+ for `RedisModule_AddACLCategory`; on older
+versions the category registration is silently skipped and the
+per-command `@read`/`@write` categories still apply.
 
 ### 22. `eval` in test helpers
 
