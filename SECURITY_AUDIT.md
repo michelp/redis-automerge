@@ -768,11 +768,33 @@ the runner. The new `-e` only catches *runner-body* mistakes (a failing
 own `-e`. All 17 test files already set `-euo pipefail` themselves; the
 full Docker test suite (17/17) passes with the change.
 
-### 24. No Docker HEALTHCHECK
+### 24. No Docker HEALTHCHECK  ✅ RESOLVED 2026-05-11
 
 **File:** `Dockerfile`
 
 The image has no `HEALTHCHECK` instruction for container orchestrators.
+
+**Resolution.** The runtime stage in `Dockerfile` now declares a
+`HEALTHCHECK` that verifies both Redis liveness and that the automerge
+module is actually loaded:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD redis-cli ping | grep -q PONG && \
+        redis-cli MODULE LIST | grep -qi automerge
+```
+
+The `PING` clause covers basic responsiveness; the `MODULE LIST` clause
+is belt-and-suspenders against a future `CMD` override that boots Redis
+without `--loadmodule` (when the in-tree `--loadmodule` flag itself
+fails, redis-server already exits at startup, so the container would
+never reach healthy state). Timings: 10s start grace so first-boot
+module load doesn't flap; 30s interval and 5s timeout to keep
+orchestrator load negligible; 3 retries before unhealthy.
+
+Verified end-to-end by building the image and running `docker compose up
+-d redis` — `docker inspect` reports `"Status":"healthy"` within the
+start-period. Full Docker integration suite (17/17) still passes.
 
 ### 25. `IndexConfig::matches_pattern` is not Redis-glob-compatible
 
