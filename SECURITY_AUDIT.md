@@ -1018,7 +1018,7 @@ note.
 
 ## Code Quality / Maintainability
 
-### 32. Pervasive code duplication in ext.rs
+### 32. Pervasive code duplication in ext.rs  ✅ RESOLVED 2026-05-11
 
 Nearly every operation has two near-identical implementations (e.g., `put_text()`
 and `put_text_with_change()`). This pattern repeats ~15 times. The base methods
@@ -1026,6 +1026,47 @@ should delegate to the `_with_change` variant and discard the return value.
 
 The "convert scalar string to Text object" pattern is copy-pasted across 6+
 functions and should be extracted to a helper.
+
+**Resolution.** Implemented both halves of the audit recommendation in
+`redis-automerge/src/ext.rs`:
+
+1. **Base methods now delegate to their `_with_change` siblings.** Each
+   of the 14 base writers (`put_text`, `put_int`, `put_double`,
+   `put_bool`, `put_counter`, `inc_counter`, `put_timestamp`,
+   `create_list`, `append_text`, `append_int`, `append_double`,
+   `append_bool`, `splice_text`, `create_mark`, `clear_mark`) is now a
+   one-line delegate that calls the `_with_change` variant and discards
+   the returned `Option<Vec<u8>>` via `.map(|_| ())`. The two methods
+   are now guaranteed to stay in lockstep because there is exactly one
+   implementation. `put_diff` was already deduplicated under audit #33
+   so it carries the same shape.
+
+2. **"Scalar string → Text object" pattern extracted.** A new private
+   helper `RedisAutomergeClient::ensure_text_object_at(&mut self, path:
+   &str) -> Result<ObjId, AutomergeError>` performs the path resolution
+   plus the optional in-place conversion in one place. The six call
+   sites (`splice_text`, `splice_text_with_change`, `create_mark`,
+   `create_mark_with_change`, `clear_mark`, `clear_mark_with_change`)
+   used to copy-paste the same ~25-line block; that block now exists
+   exactly once. The three `_with_change` operations that previously
+   embedded the conversion body each shrank to a focused 8–10 line
+   body that owns only its splice/mark/unmark call.
+
+Net impact on `ext.rs`: **+107 / -578 lines** (≈471 net lines removed)
+per `git diff --stat`. No public API change — every previously exported
+method retains the same signature, doc-comment, and observable behavior
+(including AOF push semantics, since the delegated `_with_change`
+variants push to `self.aof` unconditionally on a successful change,
+matching the prior base-method behavior).
+
+Verified end-to-end by running both test layers under Docker:
+* **72 / 72** Rust unit tests pass (`cargo test --lib`), including the
+  splice/text/mark/timestamp/JSON-roundtrip cases that exercise every
+  refactored code path.
+* **17 / 17** integration suites pass (`docker compose run --build
+  --rm test`), covering keyspace notifications, change publishing,
+  text operations, marks, AOF restart, JSON ops, search indexing, and
+  the input-limit hardenings from the prior audit fixes.
 
 ### 33. `put_diff` / `put_diff_with_change` are fully duplicated  ✅ RESOLVED 2026-05-11
 

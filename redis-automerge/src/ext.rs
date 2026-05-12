@@ -494,24 +494,11 @@ impl RedisAutomergeClient {
     /// - An array index is out of bounds
     /// - A path segment exists but is not an object
     pub fn put_text(&mut self, path: &str, value: &str) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        put_value_to_parent(&mut tx, &parent_obj, &field_name[0], value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant and discard
+        // the returned change bytes. Centralizing the Automerge plumbing
+        // in one place keeps the two methods in lockstep instead of
+        // drifting via copy-paste edits.
+        self.put_text_with_change(path, value).map(|_| ())
     }
 
     /// Retrieves a text value from the specified path.
@@ -656,24 +643,8 @@ impl RedisAutomergeClient {
     /// Insert an integer value using a path (e.g., "user.age", "users[0].age", or "$.user.age").
     /// Creates intermediate maps as needed. Array indices must already exist.
     pub fn put_int(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        put_value_to_parent(&mut tx, &parent_obj, &field_name[0], value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.put_int_with_change(path, value).map(|_| ())
     }
 
     /// Retrieve an integer value using a path (e.g., "user.age", "users[0].age", or "$.user.age").
@@ -737,24 +708,8 @@ impl RedisAutomergeClient {
     /// Insert a double value using a path (e.g., "metrics.temperature", "temps[0]", or "$.metrics.temperature").
     /// Creates intermediate maps as needed. Array indices must already exist.
     pub fn put_double(&mut self, path: &str, value: f64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        put_value_to_parent(&mut tx, &parent_obj, &field_name[0], value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.put_double_with_change(path, value).map(|_| ())
     }
 
     /// Insert a double value and return the raw change bytes.
@@ -818,24 +773,8 @@ impl RedisAutomergeClient {
     /// Insert a boolean value using a path (e.g., "flags.active", "flags\[0\]", or "$.flags.active").
     /// Creates intermediate maps as needed. Array indices must already exist.
     pub fn put_bool(&mut self, path: &str, value: bool) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        put_value_to_parent(&mut tx, &parent_obj, &field_name[0], value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.put_bool_with_change(path, value).map(|_| ())
     }
 
     /// Retrieve a boolean value using a path (e.g., "flags.active", "flags\[0\]", or "$.flags.active").
@@ -902,33 +841,8 @@ impl RedisAutomergeClient {
     /// Counters are CRDT values that support increment operations with proper
     /// conflict resolution across distributed systems.
     pub fn put_counter(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        // Put counter value
-        match &field_name[0] {
-            PathSegment::Key(key) => {
-                tx.put(&parent_obj, key.as_str(), ScalarValue::Counter(value.into()))?;
-            }
-            PathSegment::Index(idx) => {
-                tx.put(&parent_obj, *idx, ScalarValue::Counter(value.into()))?;
-            }
-        }
-
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.put_counter_with_change(path, value).map(|_| ())
     }
 
     /// Insert a counter value and return the raw change bytes.
@@ -1236,43 +1150,8 @@ impl RedisAutomergeClient {
     /// assert_eq!(client.get_counter("views").unwrap(), Some(6));
     /// ```
     pub fn inc_counter(&mut self, path: &str, delta: i64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object (don't create it if it doesn't exist for increment)
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        let mut tx = self.doc.transaction();
-
-        // Increment the counter
-        match &field_name[0] {
-            PathSegment::Key(key) => {
-                tx.increment(&parent_obj, key.as_str(), delta)?;
-            }
-            PathSegment::Index(idx) => {
-                tx.increment(&parent_obj, *idx, delta)?;
-            }
-        }
-
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.inc_counter_with_change(path, delta).map(|_| ())
     }
 
     /// Increment a counter and return the raw change bytes.
@@ -1345,33 +1224,8 @@ impl RedisAutomergeClient {
     /// client.put_timestamp("created_at", 1704067200000).unwrap();
     /// ```
     pub fn put_timestamp(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        // Put timestamp value
-        match &field_name[0] {
-            PathSegment::Key(key) => {
-                tx.put(&parent_obj, key.as_str(), ScalarValue::Timestamp(value))?;
-            }
-            PathSegment::Index(idx) => {
-                tx.put(&parent_obj, *idx, ScalarValue::Timestamp(value))?;
-            }
-        }
-
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.put_timestamp_with_change(path, value).map(|_| ())
     }
 
     /// Insert a timestamp value and return the raw change bytes.
@@ -1599,32 +1453,8 @@ impl RedisAutomergeClient {
     ///
     /// Returns an error if the path is empty or the final segment is an array index.
     pub fn create_list(&mut self, path: &str) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-        let mut tx = self.doc.transaction();
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-        let parent_obj = navigate_or_create_path(&mut tx, parent_path)?;
-
-        match &field_name[0] {
-            PathSegment::Key(key) => {
-                tx.put_object(&parent_obj, key.as_str(), automerge::ObjType::List)?;
-            }
-            PathSegment::Index(_) => {
-                return Err(AutomergeError::Fail); // Cannot create list at index
-            }
-        }
-
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.create_list_with_change(path).map(|_| ())
     }
 
     /// Create a new empty list and return the raw change bytes.
@@ -1691,25 +1521,8 @@ impl RedisAutomergeClient {
     ///
     /// Returns an error if the path doesn't exist or doesn't point to a list.
     pub fn append_text(&mut self, path: &str, value: &str) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        // Navigate before creating transaction
-        let list_obj = if segments.is_empty() {
-            ROOT
-        } else {
-            navigate_path_read(&self.doc, &segments)?.ok_or(AutomergeError::Fail)?
-        };
-
-        let list_len = self.doc.length(&list_obj);
-        let mut tx = self.doc.transaction();
-        tx.insert(&list_obj, list_len, value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.append_text_with_change(path, value).map(|_| ())
     }
 
     /// Append a text value to a list and return the raw change bytes.
@@ -1745,25 +1558,8 @@ impl RedisAutomergeClient {
 
     /// Append an integer value to a list at the specified path.
     pub fn append_int(&mut self, path: &str, value: i64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        // Navigate before creating transaction
-        let list_obj = if segments.is_empty() {
-            ROOT
-        } else {
-            navigate_path_read(&self.doc, &segments)?.ok_or(AutomergeError::Fail)?
-        };
-
-        let list_len = self.doc.length(&list_obj);
-        let mut tx = self.doc.transaction();
-        tx.insert(&list_obj, list_len, value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.append_int_with_change(path, value).map(|_| ())
     }
 
     /// Append an integer value to a list and return the raw change bytes.
@@ -1799,25 +1595,8 @@ impl RedisAutomergeClient {
 
     /// Append a double value to a list at the specified path.
     pub fn append_double(&mut self, path: &str, value: f64) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        // Navigate before creating transaction
-        let list_obj = if segments.is_empty() {
-            ROOT
-        } else {
-            navigate_path_read(&self.doc, &segments)?.ok_or(AutomergeError::Fail)?
-        };
-
-        let list_len = self.doc.length(&list_obj);
-        let mut tx = self.doc.transaction();
-        tx.insert(&list_obj, list_len, value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.append_double_with_change(path, value).map(|_| ())
     }
 
     /// Append a double value to a list and return the raw change bytes.
@@ -1853,25 +1632,8 @@ impl RedisAutomergeClient {
 
     /// Append a boolean value to a list at the specified path.
     pub fn append_bool(&mut self, path: &str, value: bool) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        // Navigate before creating transaction
-        let list_obj = if segments.is_empty() {
-            ROOT
-        } else {
-            navigate_path_read(&self.doc, &segments)?.ok_or(AutomergeError::Fail)?
-        };
-
-        let list_len = self.doc.length(&list_obj);
-        let mut tx = self.doc.transaction();
-        tx.insert(&list_obj, list_len, value)?;
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.append_bool_with_change(path, value).map(|_| ())
     }
 
     /// Append a boolean value to a list and return the raw change bytes.
@@ -2048,6 +1810,65 @@ impl RedisAutomergeClient {
         self.doc.diff(before_heads, after_heads)
     }
 
+    /// Resolve `path` to a Text object, converting an existing string
+    /// scalar into a Text object in-place if needed.
+    ///
+    /// Splice and mark operations require an Automerge `Text` object to
+    /// operate on, but the same field may already hold a plain string
+    /// scalar (the natural result of an earlier `put_text` that did not
+    /// need CRDT-aware text semantics). When that happens this helper
+    /// commits a one-off transaction that replaces the scalar with a
+    /// `Text` object seeded with the prior contents, then returns the
+    /// new object's id.
+    ///
+    /// Audit #32: this body used to be copy-pasted across six call
+    /// sites (`splice_text`, `splice_text_with_change`, `create_mark`,
+    /// `create_mark_with_change`, `clear_mark`, `clear_mark_with_change`).
+    /// Extracting it here keeps those six in lockstep.
+    fn ensure_text_object_at(&mut self, path: &str) -> Result<ObjId, AutomergeError> {
+        let segments = parse_path(path)?;
+        if segments.is_empty() {
+            return Err(AutomergeError::Fail);
+        }
+        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
+
+        let parent_obj = if parent_path.is_empty() {
+            ROOT
+        } else {
+            match navigate_path_read(&self.doc, parent_path)? {
+                Some(obj) => obj,
+                None => return Err(AutomergeError::Fail),
+            }
+        };
+
+        match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
+            Some((Value::Object(automerge::ObjType::Text), obj_id)) => Ok(obj_id),
+            Some((Value::Scalar(s), _)) => {
+                if let ScalarValue::Str(existing_text) = s.as_ref() {
+                    let existing_text_owned = existing_text.to_string();
+                    let mut tx = self.doc.transaction();
+                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
+                    let text_obj = match &field_name[0] {
+                        PathSegment::Key(key) => tx.put_object(
+                            &parent_for_put,
+                            key.as_str(),
+                            automerge::ObjType::Text,
+                        )?,
+                        PathSegment::Index(idx) => {
+                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
+                        }
+                    };
+                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
+                    let (_hash, _patch) = tx.commit();
+                    Ok(text_obj)
+                } else {
+                    Err(AutomergeError::Fail)
+                }
+            }
+            _ => Err(AutomergeError::Fail),
+        }
+    }
+
     /// Splice text at the specified path.
     ///
     /// This performs an in-place text splice operation using Automerge's `splice_text` method,
@@ -2090,63 +1911,8 @@ impl RedisAutomergeClient {
         del: isize,
         text: &str,
     ) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
-
-        let mut tx = self.doc.transaction();
-        tx.splice_text(&text_obj, pos, del, text)?;
-        let (hash, _patch) = tx.commit();
-
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.splice_text_with_change(path, pos, del, text).map(|_| ())
     }
 
     /// Splice text and return the raw change bytes.
@@ -2189,52 +1955,10 @@ impl RedisAutomergeClient {
         del: isize,
         text: &str,
     ) -> Result<Option<Vec<u8>>, AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
+        // Audit #32: text-object resolution + scalar->Text conversion
+        // lives in `ensure_text_object_at` so this body stays focused
+        // on the splice itself.
+        let text_obj = self.ensure_text_object_at(path)?;
 
         let mut tx = self.doc.transaction();
         tx.splice_text(&text_obj, pos, del, text)?;
@@ -2586,64 +2310,9 @@ impl RedisAutomergeClient {
         end: usize,
         expand: ExpandMark,
     ) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
-
-        let mut tx = self.doc.transaction();
-        let mark = Mark::new(name.to_string(), value, start, end);
-        tx.mark(&text_obj, mark, expand)?;
-        let (hash, _patch) = tx.commit();
-
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.create_mark_with_change(path, name, value, start, end, expand)
+            .map(|_| ())
     }
 
     /// Create a mark on a text object and return the raw change bytes.
@@ -2656,52 +2325,9 @@ impl RedisAutomergeClient {
         end: usize,
         expand: ExpandMark,
     ) -> Result<Option<Vec<u8>>, AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
+        // Audit #32: text-object resolution + scalar->Text conversion
+        // lives in `ensure_text_object_at`.
+        let text_obj = self.ensure_text_object_at(path)?;
 
         let mut tx = self.doc.transaction();
         let mark = Mark::new(name.to_string(), value, start, end);
@@ -2752,63 +2378,9 @@ impl RedisAutomergeClient {
         end: usize,
         expand: ExpandMark,
     ) -> Result<(), AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
-
-        let mut tx = self.doc.transaction();
-        tx.unmark(&text_obj, name, start, end, expand)?;
-        let (hash, _patch) = tx.commit();
-
-        if let Some(h) = hash {
-            if let Some(change) = self.doc.get_change_by_hash(&h) {
-                self.aof.push(change.raw_bytes().to_vec());
-            }
-        }
-        Ok(())
+        // Audit #32: delegate to the `_with_change` variant.
+        self.clear_mark_with_change(path, name, start, end, expand)
+            .map(|_| ())
     }
 
     /// Remove a mark from a text object and return the raw change bytes.
@@ -2820,52 +2392,9 @@ impl RedisAutomergeClient {
         end: usize,
         expand: ExpandMark,
     ) -> Result<Option<Vec<u8>>, AutomergeError> {
-        let segments = parse_path(path)?;
-
-        if segments.is_empty() {
-            return Err(AutomergeError::Fail);
-        }
-
-        let (parent_path, field_name) = segments.split_at(segments.len() - 1);
-
-        // Get parent object
-        let parent_obj = if parent_path.is_empty() {
-            ROOT
-        } else {
-            match navigate_path_read(&self.doc, parent_path)? {
-                Some(obj) => obj,
-                None => return Err(AutomergeError::Fail),
-            }
-        };
-
-        // Check what exists at the path
-        let text_obj = match get_value_from_parent(&self.doc, &parent_obj, &field_name[0])? {
-            Some((Value::Object(automerge::ObjType::Text), obj_id)) => obj_id,
-            Some((Value::Scalar(s), _)) => {
-                // Convert scalar string to Text object
-                if let ScalarValue::Str(existing_text) = s.as_ref() {
-                    // Clone the text to avoid borrow checker issues
-                    let existing_text_owned = existing_text.to_string();
-                    let mut tx = self.doc.transaction();
-                    let parent_for_put = navigate_or_create_path(&mut tx, parent_path)?;
-                    let text_obj = match &field_name[0] {
-                        PathSegment::Key(key) => {
-                            tx.put_object(&parent_for_put, key.as_str(), automerge::ObjType::Text)?
-                        }
-                        PathSegment::Index(idx) => {
-                            tx.put_object(&parent_for_put, *idx, automerge::ObjType::Text)?
-                        }
-                    };
-                    // Insert existing text
-                    tx.splice_text(&text_obj, 0, 0, &existing_text_owned)?;
-                    let (_hash, _patch) = tx.commit();
-                    text_obj
-                } else {
-                    return Err(AutomergeError::Fail);
-                }
-            }
-            _ => return Err(AutomergeError::Fail),
-        };
+        // Audit #32: text-object resolution + scalar->Text conversion
+        // lives in `ensure_text_object_at`.
+        let text_obj = self.ensure_text_object_at(path)?;
 
         let mut tx = self.doc.transaction();
         tx.unmark(&text_obj, name, start, end, expand)?;
