@@ -991,7 +991,7 @@ warning-grep step is unchanged). Also added `**/target/` to `.dockerignore`
 so the docs build does not race with a stale `redis-automerge/target/`
 directory left over from local cargo runs.
 
-### 31. `mcp-server/` is an empty `0700` directory committed to the tree
+### 31. `mcp-server/` is an empty `0700` directory committed to the tree  ✅ RESOLVED 2026-05-11
 
 **File:** `mcp-server/`
 
@@ -1001,6 +1001,18 @@ vulnerability, but undocumented state in the repo invites mistakes
 
 **Recommendation:** Remove the directory or commit a `README.md` explaining
 its intended purpose.
+
+**Resolution.** The empty `mcp-server/` directory has been removed from
+the working tree (`rmdir`). Note that git does not track empty
+directories, so `git ls-files mcp-server/` returned nothing even before
+the removal — the directory existed only on the local filesystem with
+mode `0700`, with no committed contents to delete from the index. The
+audit phrasing "committed to the tree" was therefore slightly off, but
+the underlying observation (an undocumented dangling directory inviting
+confusion) was valid, and removing it eliminates the surface entirely.
+No code changes were required and no source files were affected; this
+entry is closed by the working-directory cleanup and this resolution
+note.
 
 ---
 
