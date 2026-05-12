@@ -136,5 +136,27 @@ echo "   ✓ Non-existent fields return null"
 
 rm -f /tmp/saved.bin
 
+# Test 9: Audit #34 — MEMORY USAGE returns a non-zero footprint for AM
+# documents. Previously the mem_usage callback was None, so operators
+# couldn't see Automerge memory consumption via MEMORY USAGE.
+echo "Test 9: MEMORY USAGE reports a non-zero, growing footprint..."
+redis-cli -h "$HOST" del memcheck > /dev/null
+redis-cli -h "$HOST" am.new memcheck > /dev/null
+empty_mem=$(redis-cli -h "$HOST" memory usage memcheck)
+[ -n "$empty_mem" ] && [ "$empty_mem" -gt 0 ] || {
+    echo "   ✗ MEMORY USAGE on empty AM doc returned '$empty_mem' (expected > 0)"
+    exit 1
+}
+
+# Write a chunk and confirm the reported footprint grows.
+redis-cli -h "$HOST" am.puttext memcheck blob "$(head -c 4096 /dev/urandom | base64)" > /dev/null
+after_mem=$(redis-cli -h "$HOST" memory usage memcheck)
+[ "$after_mem" -gt "$empty_mem" ] || {
+    echo "   ✗ MEMORY USAGE did not grow after a 4 KiB write (empty=$empty_mem, after=$after_mem)"
+    exit 1
+}
+redis-cli -h "$HOST" del memcheck > /dev/null
+echo "   ✓ MEMORY USAGE reports non-zero, growing footprint for AM documents"
+
 echo ""
 echo "✅ All basic type tests passed!"

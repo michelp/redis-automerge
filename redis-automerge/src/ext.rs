@@ -467,6 +467,39 @@ impl RedisAutomergeClient {
         }
     }
 
+    /// Estimate the in-memory footprint of this client in bytes.
+    ///
+    /// Audit #34: backs the Redis `mem_usage` callback so operators can
+    /// monitor per-key Automerge memory consumption via
+    /// `MEMORY USAGE <key>`. Automerge 0.9 does not expose a public
+    /// memory-accounting API, so this proxy combines three components:
+    ///
+    /// 1. The struct's own stack-sized fields (`size_of::<Self>()`).
+    /// 2. The uncompressed serialized document length
+    ///    (`doc.save_nocompress().len()`). This is the closest in-memory
+    ///    estimate available from the published `automerge` crate; the
+    ///    compressed variant (`save()`) understates the live op-set by
+    ///    the LZ4 compression ratio.
+    /// 3. The aggregate AOF change-log size: `sum(aof[*].capacity()) +
+    ///    aof.capacity() * size_of::<Vec<u8>>()`, accounting for both
+    ///    the inner buffers and the outer-Vec spine.
+    ///
+    /// `MEMORY USAGE` is an operator command issued on demand, so the
+    /// cost of serializing the document on each call (which `save_nocompress`
+    /// requires) is acceptable. The returned number is an estimate and
+    /// will undercount allocator overhead, but it is monotonic with
+    /// document growth and useful for catching runaway-growth bugs.
+    pub fn estimated_mem_bytes(&self) -> usize {
+        let struct_bytes = std::mem::size_of::<Self>();
+        let doc_bytes = self.doc.save_nocompress().len();
+        let aof_inner_bytes: usize = self.aof.iter().map(|c| c.capacity()).sum();
+        let aof_spine_bytes = self.aof.capacity() * std::mem::size_of::<Vec<u8>>();
+        struct_bytes
+            .saturating_add(doc_bytes)
+            .saturating_add(aof_inner_bytes)
+            .saturating_add(aof_spine_bytes)
+    }
+
     /// Inserts a text value at the specified path.
     ///
     /// Supports nested paths with automatic intermediate map creation.

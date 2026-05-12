@@ -1081,12 +1081,57 @@ public method shrinks to four lines (compute → call `put_text` or
 `put_text_with_change`). The audit-#18 strict check therefore lives in
 exactly one place instead of being copy-pasted.
 
-### 34. Missing `mem_usage` callback
+### 34. Missing `mem_usage` callback  ✅ RESOLVED 2026-05-11
 
 **File:** `lib.rs:103`
 
 `mem_usage: None` means `MEMORY USAGE` returns 0 for AM documents. Operators
 can't monitor Automerge memory consumption.
+
+**Resolution.** Wired up a `mem_usage` callback on the `amdoc-rs1` type
+so `MEMORY USAGE <key>` now returns a non-zero, growing estimate of
+each Automerge document's footprint.
+
+Note on the upstream constraint: Automerge 0.9.0 does not expose a
+public memory-accounting API — I surveyed the ~55 public methods on
+`Automerge`/`AutoCommit` for any heap/op-set/byte size accessor and
+found none. The only available proxies are `save()` (LZ4-compressed)
+and `save_nocompress()` (full uncompressed serialized form). Since
+`MEMORY USAGE` is an operator-initiated command issued on demand
+(never on the hot path), the cost of serializing the document on each
+call is acceptable, and the uncompressed form is the closer proxy for
+the live op-set footprint.
+
+Implementation:
+
+* New public method `RedisAutomergeClient::estimated_mem_bytes(&self)
+  -> usize` (in `ext.rs`) sums three components, all of which are
+  monotonic with document growth:
+  1. `std::mem::size_of::<Self>()` — the struct's own stack-sized
+     fields.
+  2. `self.doc.save_nocompress().len()` — uncompressed serialized
+     document.
+  3. The AOF change-log footprint: sum of `aof[*].capacity()` plus the
+     outer-Vec spine `aof.capacity() * size_of::<Vec<u8>>()`.
+  All three components use `saturating_add` so a pathologically huge
+  document cannot panic the callback.
+* New `unsafe extern "C" fn am_mem_usage(value: *const c_void) -> usize`
+  (in `lib.rs`) reconstructs the `&RedisAutomergeClient` from the
+  pointer and forwards to `estimated_mem_bytes`. The type table's
+  `mem_usage: None` was replaced with `mem_usage: Some(am_mem_usage)`.
+
+Verification:
+
+* New unit test `tests::estimated_mem_bytes_grows_with_writes` asserts
+  the estimator is at least `size_of::<RedisAutomergeClient>()` for a
+  fresh client, grows after a batch of small writes, and grows again
+  after a 64 KiB value blob. 73 / 73 unit tests pass.
+* New integration block "Test 9: MEMORY USAGE reports a non-zero,
+  growing footprint" in `scripts/tests/01-basic-types.sh` issues
+  `MEMORY USAGE` against a fresh `AM.NEW` key, asserts the result is
+  greater than zero, writes a 4 KiB blob, and asserts the post-write
+  reading exceeds the baseline. Full 17 / 17 Docker integration suite
+  passes with this addition.
 
 ---
 

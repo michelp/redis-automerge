@@ -137,7 +137,7 @@ static REDIS_AUTOMERGE_TYPE: RedisType = RedisType::new(
         rdb_save: Some(am_rdb_save),
         aof_rewrite: Some(am_aof_rewrite),  // Emit AM.LOAD commands for AOF rewrite
         free: Some(am_free),
-        mem_usage: None,
+        mem_usage: Some(am_mem_usage),
         digest: None,
         aux_load: None,
         aux_save: None,
@@ -1463,6 +1463,22 @@ fn am_fromjson(ctx: &Context, args: Vec<RedisString>) -> RedisResult {
 /// RedisAutomergeClient that was previously allocated via Box::into_raw.
 unsafe extern "C" fn am_free(value: *mut c_void) {
     drop(Box::from_raw(value.cast::<RedisAutomergeClient>()));
+}
+
+/// # Safety
+/// This function is called by Redis to satisfy `MEMORY USAGE <key>` for
+/// keys of type `amdoc-rs1`. The caller (Redis) must ensure that
+/// `value` is a valid pointer to a RedisAutomergeClient that has not
+/// yet been freed. The pointer is borrowed for the duration of the
+/// call; we do not take ownership.
+///
+/// Audit #34: previously `mem_usage: None`, which caused `MEMORY USAGE`
+/// to return 0 for every AM document and hid genuine memory pressure
+/// from operators. See `RedisAutomergeClient::estimated_mem_bytes` for
+/// the estimator design.
+unsafe extern "C" fn am_mem_usage(value: *const c_void) -> usize {
+    let client = &*(value.cast::<RedisAutomergeClient>());
+    client.estimated_mem_bytes()
 }
 
 /// # Safety
@@ -3097,5 +3113,45 @@ mod tests {
         let j = scalar_to_json(&ScalarValue::F64(f64::NAN));
         assert_eq!(j["type"], "f64");
         assert!(j["value"].is_null());
+    }
+
+    /// Audit #34: `mem_usage: None` previously hid runaway-growth bugs
+    /// because `MEMORY USAGE` returned 0 for every AM document. The
+    /// estimator must (a) be non-zero for a fresh document (the struct
+    /// itself has a footprint) and (b) grow monotonically as writes
+    /// land. Exact numbers are estimator-specific and not asserted; we
+    /// only require the monotonicity that operators care about when
+    /// monitoring for leaks.
+    #[test]
+    fn estimated_mem_bytes_grows_with_writes() {
+        let mut client = RedisAutomergeClient::new();
+        let baseline = client.estimated_mem_bytes();
+        assert!(
+            baseline >= std::mem::size_of::<RedisAutomergeClient>(),
+            "fresh client should at minimum cover its own struct size"
+        );
+
+        for i in 0..50 {
+            client.put_text(&format!("field_{}", i), "some value").unwrap();
+        }
+        let after_writes = client.estimated_mem_bytes();
+        assert!(
+            after_writes > baseline,
+            "estimator must grow after writes; baseline={}, after={}",
+            baseline,
+            after_writes
+        );
+
+        // Larger value blobs should bump the estimate further.
+        client
+            .put_text("big", &"x".repeat(64 * 1024))
+            .unwrap();
+        let after_big_write = client.estimated_mem_bytes();
+        assert!(
+            after_big_write > after_writes,
+            "estimator must grow after a 64KiB write; after={}, after_big={}",
+            after_writes,
+            after_big_write
+        );
     }
 }
