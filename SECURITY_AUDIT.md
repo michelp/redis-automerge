@@ -927,7 +927,7 @@ escape hatch for literal `--weird-path`, `--format json -- title`, and
 the plain `--format hash title` happy path. Full Docker integration
 suite (17/17) passes.
 
-### 29. `IndexConfig` paths are CSV-encoded — fails on commas in path strings
+### 29. `IndexConfig` paths are CSV-encoded — fails on commas in path strings  ✅ RESOLVED 2026-05-11
 
 **File:** `index.rs:138-143`
 
@@ -941,6 +941,30 @@ incorrectly: `["a,b"]` saves and reloads as `["a", "b"]`.
 
 **Recommendation:** Persist paths as a JSON array or a Redis list
 (`RPUSH/LRANGE`) instead of CSV.
+
+**Resolution.** The CSV encoding the audit pointed at no longer exists.
+The audit-#12 refactor (`IndexConfig::save` non-atomic HSET fan-out,
+resolved 2026-05-09) moved configs into a single Hash whose values are
+JSON-serialized objects. The current `IndexConfig::serialize` builds
+`{"enabled":..., "paths":[...], "format":"..."}` via `serde_json::json!`,
+so `paths` is stored as a proper JSON array, and
+`IndexConfig::deserialize` reads it back through `as_array()` with
+`p.as_str()` per element — commas, quotes, and backslashes inside path
+strings now survive the round-trip. A repo-wide `grep` confirms no
+`split(',')` (or equivalent) remains in `redis-automerge/src/`.
+
+To lock the new behavior in place against future regressions, two
+regression tests were added:
+
+* Unit: `index::tests::test_paths_round_trip_with_commas_and_quotes`
+  serializes and deserializes a config with paths containing commas,
+  double quotes, backslashes, dots, and bracket indices, and asserts
+  that all of `paths`/`pattern`/`format`/`enabled` round-trip
+  byte-identically (5/5 `index::tests` green).
+* Integration: "Test 15i" in `scripts/tests/15-search-indexing.sh`
+  exercises the full `AM.INDEX.CONFIGURE` → `HGET` path with a
+  comma-containing path and a quote-containing path, asserting both
+  appear in the serialized JSON form (full 17/17 Docker suite green).
 
 ### 30. `docs.yml` workflow duplicates the build Dockerfile inline  ✅ RESOLVED 2026-05-08
 

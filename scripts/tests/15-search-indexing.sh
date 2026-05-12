@@ -451,6 +451,20 @@ redis-cli -h "$HOST" am.index.delete am:index:configs "norm:*" > /dev/null
 
 echo "   ✓ --format / -- grammar is tight; typos and missing values rejected"
 
+# Test 15i: Audit #29 — paths containing commas (or quotes, backslashes)
+# round-trip cleanly through the JSON-array storage format. The historic
+# CSV encoding silently split values at commas; this regression test
+# locks the JSON-array behavior in place.
+echo "Test 15i: Comma-containing paths round-trip through config storage..."
+redis-cli -h "$HOST" am.index.configure am:index:configs "csv:*" 'plain' 'key,with,commas' 'key"with"quotes' > /dev/null
+serialized=$(redis-cli -h "$HOST" --raw hget "am:index:configs" "csv:*")
+echo "$serialized" | grep -q '"key,with,commas"' || {
+    echo "   ✗ comma path missing from serialized form: $serialized"; exit 1; }
+echo "$serialized" | grep -q '"plain"' || {
+    echo "   ✗ plain path missing from serialized form: $serialized"; exit 1; }
+redis-cli -h "$HOST" am.index.delete am:index:configs "csv:*" > /dev/null
+echo "   ✓ Paths with commas/quotes survive the round-trip"
+
 # Test 16: FT.CREATE and FT.SEARCH integration - Text search
 echo "Test 16: RediSearch integration - Full-text search..."
 # Check if RediSearch is available

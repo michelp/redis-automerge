@@ -766,4 +766,32 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_paths_round_trip_with_commas_and_quotes() {
+        // Audit #29: paths were once CSV-joined, which silently split
+        // values that contained commas. The current storage format
+        // serializes `paths` as a JSON array, so commas, quotes,
+        // backslashes, and other JSON-sensitive characters round-trip
+        // cleanly through `serialize`/`deserialize`.
+        let cfg = IndexConfig::new_with_format(
+            "doc:*".to_string(),
+            vec![
+                "ordinary".to_string(),
+                "key,with,commas".to_string(),
+                "key\"with\"quotes".to_string(),
+                "back\\slash".to_string(),
+                "a.dotted.path".to_string(),
+                "list[0].field".to_string(),
+            ],
+            IndexFormat::Hash,
+        );
+        let s = cfg.serialize();
+        let back =
+            IndexConfig::deserialize(&cfg.pattern, &s).expect("config must round-trip");
+        assert_eq!(back.paths, cfg.paths);
+        assert_eq!(back.pattern, cfg.pattern);
+        assert_eq!(back.format, cfg.format);
+        assert_eq!(back.enabled, cfg.enabled);
+    }
 }
