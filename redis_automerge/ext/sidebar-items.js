@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["MAX_JSON_DEPTH"],"enum":["DiffError","TypedValue"],"struct":["RedisAutomergeClient"],"trait":["RedisAutomergeExt"]};

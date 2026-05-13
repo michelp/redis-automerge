@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_INDEX_CONFIG_KEY"],"fn":["RedisModule_OnLoad","RedisModule_OnUnload","index_config_key"],"mod":["ext","index"]};

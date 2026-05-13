@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["INDEX_SENTINEL_FIELD"],"enum":["IndexFormat"],"fn":["build_json_document","delete_search_index","extract_indexed_fields","get_index_key","invalidate_cache","list_configs","update_json_index","update_search_index","validate_pattern"],"struct":["IndexConfig"]};
