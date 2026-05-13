@@ -1494,13 +1494,41 @@ unsafe extern "C" fn am_rdb_save(rdb: *mut raw::RedisModuleIO, value: *mut c_voi
 /// This function is called by Redis during RDB loading.
 /// The caller (Redis) must ensure that `rdb` is a valid RedisModuleIO pointer.
 /// Returns a pointer to a newly allocated RedisAutomergeClient, or null on error.
+///
+/// Audit #10: both failure branches now log via `RedisModule_LogIOError`
+/// so operators see *why* an RDB load returned null. Previously both
+/// returned `null_mut()` silently and the operator saw data disappear
+/// with no diagnostic in the Redis log. We log at the Warning level
+/// with a stable audit-tagged prefix so the message is greppable.
 unsafe extern "C" fn am_rdb_load(rdb: *mut raw::RedisModuleIO, _encver: c_int) -> *mut c_void {
+    use redis_module::logging::{log_io_error, RedisLogLevel};
     match raw::load_string_buffer(rdb) {
         Ok(buf) => match RedisAutomergeClient::load(buf.as_ref()) {
             Ok(client) => Box::into_raw(Box::new(client)).cast::<c_void>(),
-            Err(_) => std::ptr::null_mut(),
+            Err(e) => {
+                log_io_error(
+                    rdb,
+                    RedisLogLevel::Warning,
+                    &format!(
+                        "am.rdb_load: failed to deserialize Automerge document \
+                         from RDB string buffer (audit #10): {}",
+                        e
+                    ),
+                );
+                std::ptr::null_mut()
+            }
         },
-        Err(_) => std::ptr::null_mut(),
+        Err(e) => {
+            log_io_error(
+                rdb,
+                RedisLogLevel::Warning,
+                &format!(
+                    "am.rdb_load: failed to read RDB string buffer (audit #10): {}",
+                    e
+                ),
+            );
+            std::ptr::null_mut()
+        }
     }
 }
 
@@ -3159,6 +3187,30 @@ mod tests {
             "estimator must grow after a 64KiB write; after={}, after_big={}",
             after_writes,
             after_big_write
+        );
+    }
+
+    /// Audit #10: `am_rdb_load` now logs via `RedisModule_LogIOError`
+    /// on both failure branches. The inner load that powers the second
+    /// branch (after a successful raw read from the RDB) is
+    /// `RedisAutomergeClient::load`. This test confirms that function
+    /// propagates an `Err` for malformed input — exactly the value
+    /// `am_rdb_load` formats into the log message — so the callback's
+    /// error-path code is reachable by construction. We cannot easily
+    /// exercise `log_io_error` itself from Rust unit tests because the
+    /// FFI symbol is unset outside a live Redis process; the
+    /// integration suite covers the happy load path end-to-end.
+    #[test]
+    fn redis_automerge_client_load_rejects_malformed_bytes() {
+        // 256 bytes of 0xFF cannot be a valid Automerge document. The
+        // exact error variant is automerge-internal; we just require
+        // that load returns Err so the caller has something to log.
+        let junk = vec![0xFFu8; 256];
+        let result = RedisAutomergeClient::load(&junk);
+        assert!(
+            result.is_err(),
+            "RedisAutomergeClient::load must surface an error for malformed RDB bytes \
+             so am_rdb_load has an error value to feed to log_io_error (audit #10)"
         );
     }
 }

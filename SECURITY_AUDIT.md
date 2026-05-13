@@ -12,18 +12,17 @@ that audit (`daf1319`) touches CI scripts and does not address any of them.
 
 ## Resolution Summary
 
-**Status as of 2026-05-13:** 33 of 34 findings resolved (97%). All HIGH-severity
-items are closed; the single open item is MEDIUM and relates to
-defense-in-depth (error-path logging in unsafe FFI callbacks) rather than an
-exploitable defect.
+**Status as of 2026-05-13:** **34 of 34 findings resolved (100%).** All
+items across HIGH, MEDIUM, LOW, and Code Quality / Maintainability are
+closed.
 
-| Severity                    | Total | Resolved | Open    |
-| --------------------------- | ----: | -------: | ------: |
-| HIGH                        |     7 |        7 |       0 |
-| MEDIUM                      |    10 |        9 |  1 (#10) |
-| LOW                         |    14 |       14 |       0 |
-| Code Quality / Maintainability |  3 |        3 |       0 |
-| **Total**                   |    34 |       33 |       1 |
+| Severity                    | Total | Resolved | Open |
+| --------------------------- | ----: | -------: | ---: |
+| HIGH                        |     7 |        7 |    0 |
+| MEDIUM                      |    10 |       10 |    0 |
+| LOW                         |    14 |       14 |    0 |
+| Code Quality / Maintainability |  3 |        3 |    0 |
+| **Total**                   |    34 |       34 |    0 |
 
 **Remediation timeline.** Fixes landed in dated tranches between 2026-05-08 and
 2026-05-13, each shipped as a focused commit linked from the corresponding
@@ -34,15 +33,13 @@ JSON/text-encoding correctness cluster (#18–#20) closed across 2026-05-09 thro
 deduplication refactor (#32, #33) closed 2026-05-11; the operator-visibility
 work (#34, `mem_usage` callback) closed 2026-05-11; the dead AOF-buffer
 deletion (#9 — the audit's title was misleading; see that section's resolution
-block) closed 2026-05-13.
+block) and the RDB-load error-logging fix (#10) closed 2026-05-13.
 
-**Open items.**
-
-* **#10 Unsafe functions suppress errors silently** *(MEDIUM)* — `am_rdb_load`
-  and a few siblings return `null_mut()` / `Err(...)` on failure without
-  logging the cause. Touched indirectly by #26 (which added a load-time check
-  for `RedisModule_EmitAOF`), but the broader recommendation — `log_warning`
-  in every `unsafe extern "C"` error path — is still open.
+**Open items.** None. A re-audit cycle is the natural next step before
+declaring the codebase clear, since some of the open findings were
+miscategorized in the original audit (#9 was dead state rather than a
+runtime risk) and a fresh pass may surface new items in the
+post-remediation tree.
 
 ---
 
@@ -364,7 +361,7 @@ Verification:
   * `01-basic-types.sh` Test 9 (MEMORY USAGE still non-zero, still
     grows with writes; audit #34 estimator intact).
 
-### 10. Unsafe functions suppress errors silently
+### 10. Unsafe functions suppress errors silently  ✅ RESOLVED 2026-05-13
 
 **File:** `lib.rs:1220-1228`
 
@@ -373,6 +370,63 @@ fails, the operator has no indication of why data was lost.
 
 **Recommendation:** Add `ctx.log_warning()` calls (or the FFI equivalent) in
 error paths of all unsafe functions.
+
+**Resolution.** Both failure branches of `am_rdb_load` in
+`redis-automerge/src/lib.rs` now call
+`redis_module::logging::log_io_error(rdb, RedisLogLevel::Warning, …)`
+with a stable audit-tagged prefix (`am.rdb_load: …(audit #10)`). The
+underlying error is rendered via `Display`, so operators see the
+concrete cause:
+
+* If `raw::load_string_buffer(rdb)` fails (cannot even read the raw
+  bytes from the RDB stream), the message reads:
+  `am.rdb_load: failed to read RDB string buffer (audit #10): <error>`.
+* If the raw read succeeds but `RedisAutomergeClient::load(buf)` fails
+  to deserialize the document, the message reads:
+  `am.rdb_load: failed to deserialize Automerge document from RDB
+   string buffer (audit #10): <error>`.
+
+The FFI equivalent of `ctx.log_warning` for an RDB callback (which
+receives `*mut RedisModuleIO`, not a `*mut Context`) is
+`RedisModule_LogIOError`, exposed by the `redis-module` crate as
+`logging::log_io_error`. Tagging both lines with `audit #10` makes
+them stable to grep over time.
+
+**Scope of "all unsafe functions".** Inspecting every `unsafe extern
+"C"` declared by this module:
+
+* `am_free` — `drop(Box::from_raw(...))`, no failure path.
+* `am_mem_usage` — returns `usize`, no failure path. (Audit #34.)
+* `am_rdb_save` — `client.save()` returns infallibly; `raw::save_slice`
+  returns `()`. No failure to log.
+* `am_rdb_load` — **two failure paths, both now logged (this fix).**
+* `am_aof_rewrite` — the only previous panic path was the
+  `RedisModule_EmitAOF.unwrap()`, resolved in audit #26 by gating
+  module load on the symbol being present (load-time fast fail) and
+  promoting the unwrap to `.expect(...)` with a self-explanatory
+  message at the call site.
+
+So this finding resolves with the single targeted change to
+`am_rdb_load`; no other unsafe callback has a silent error path to
+fix.
+
+Verification:
+
+* New unit test `tests::redis_automerge_client_load_rejects_malformed_bytes`
+  feeds 256 bytes of `0xFF` to `RedisAutomergeClient::load` and asserts
+  the call returns `Err`. This locks in the precondition the callback
+  relies on — that `load` propagates an error rather than silently
+  producing a default document — so `am_rdb_load`'s error-path
+  formatting (and therefore the `log_io_error` call) is reachable by
+  construction. The integration suite covers the happy load path
+  end-to-end via `10-aof-persistence.sh`. **74 / 74** unit tests pass;
+  **17 / 17** integration suites pass.
+
+(We do not assert log-output contents — `log_io_error` is a no-op
+under `cfg(test)`, and reproducing it in an integration test would
+require corrupting an RDB file and tail-grepping the Redis log. The
+audit asks for *logging*, not log-output verification, and the
+formatting is straightforward enough to read off inspection.)
 
 ### 11. Search index not updated for all write commands  ✅ RESOLVED 2026-05-09
 
