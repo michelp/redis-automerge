@@ -1856,9 +1856,16 @@ mod tests {
         let mut client = RedisAutomergeClient::new();
         client.apply(vec![change.clone()]).unwrap();
 
-        // AOF should capture the change.
-        let aof = client.commands();
-        assert_eq!(aof.len(), 1);
+        // The change should be visible as a head in the document. We
+        // used to assert `client.commands().len() == 1` here, but
+        // audit #9 removed the per-client AOF buffer because the
+        // actual AOF mechanism logs commands via `ctx.replicate`
+        // rather than draining this buffer.
+        assert_eq!(
+            client.get_int("field").unwrap(),
+            Some(1),
+            "apply() must surface the field written by the merged change"
+        );
 
         // RDB persistence roundtrip.
         let bytes = client.save();

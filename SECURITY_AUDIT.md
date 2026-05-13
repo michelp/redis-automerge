@@ -10,6 +10,42 @@ that audit (`daf1319`) touches CI scripts and does not address any of them.
 
 ---
 
+## Resolution Summary
+
+**Status as of 2026-05-13:** 33 of 34 findings resolved (97%). All HIGH-severity
+items are closed; the single open item is MEDIUM and relates to
+defense-in-depth (error-path logging in unsafe FFI callbacks) rather than an
+exploitable defect.
+
+| Severity                    | Total | Resolved | Open    |
+| --------------------------- | ----: | -------: | ------: |
+| HIGH                        |     7 |        7 |       0 |
+| MEDIUM                      |    10 |        9 |  1 (#10) |
+| LOW                         |    14 |       14 |       0 |
+| Code Quality / Maintainability |  3 |        3 |       0 |
+| **Total**                   |    34 |       33 |       1 |
+
+**Remediation timeline.** Fixes landed in dated tranches between 2026-05-08 and
+2026-05-13, each shipped as a focused commit linked from the corresponding
+"Resolution" block below. The bulk of the HIGH-severity work (#1–#7, plus #8 and
+#30) cleared in the first day; the index/shadow-key cluster (#11–#17) and the
+JSON/text-encoding correctness cluster (#18–#20) closed across 2026-05-09 through
+2026-05-11; the test-and-tooling polish (#22–#26, #28, #29, #31) and the
+deduplication refactor (#32, #33) closed 2026-05-11; the operator-visibility
+work (#34, `mem_usage` callback) closed 2026-05-11; the dead AOF-buffer
+deletion (#9 — the audit's title was misleading; see that section's resolution
+block) closed 2026-05-13.
+
+**Open items.**
+
+* **#10 Unsafe functions suppress errors silently** *(MEDIUM)* — `am_rdb_load`
+  and a few siblings return `null_mut()` / `Err(...)` on failure without
+  logging the cause. Touched indirectly by #26 (which added a load-time check
+  for `RedisModule_EmitAOF`), but the broader recommendation — `log_warning`
+  in every `unsafe extern "C"` error path — is still open.
+
+---
+
 ## HIGH Severity
 
 ### 1. `--enable-debug-command yes` in production Dockerfile  ✅ RESOLVED 2026-05-08
@@ -255,7 +291,7 @@ build is committed at `redis-automerge/Cargo.lock`. Pairs naturally with
 finding #6 — now that the source of truth is `Cargo.toml` + crates.io, the
 lockfile pins the exact transitive dependency tree across all builders.
 
-### 9. Unbounded AOF buffer growth
+### 9. Unbounded AOF buffer growth  ✅ RESOLVED 2026-05-13
 
 **File:** `ext.rs:364-367`
 
@@ -264,6 +300,69 @@ The `aof: Vec<Vec<u8>>` buffer accumulates all change bytes since the last
 buffer grows without limit.
 
 **Recommendation:** Add a capacity limit or periodic drain mechanism.
+
+**Resolution.** The finding's title was misleading and the original
+recommendation treated the field as if it were load-bearing. It isn't.
+Tracing the data flow:
+
+* The real Redis AOF mechanism for AM.* commands works via
+  `ctx.replicate(cmd, &refs[..])` inside `finalize_write_meta`
+  (`redis-automerge/src/lib.rs:344`). Redis appends the original
+  command (e.g. `AM.PUTTEXT mykey field "hello"`) to the AOF file in
+  real-time; on `DEBUG RESTART` or true crash, Redis replays the
+  command through its normal handler and the mutation is re-applied.
+  `scripts/tests/10-aof-persistence.sh` exercises this end-to-end via
+  `restart_redis()` (`scripts/tests/lib/common.sh:132`, which issues
+  `DEBUG RESTART`) and was already green.
+* The `am_aof_rewrite` callback (`lib.rs:1497-1542`) is the rewrite /
+  compaction path, not the regular logging path; it emits a single
+  `AM.LOAD <key> <full-doc>` per key when `BGREWRITEAOF` runs and
+  ignores the `aof` field entirely.
+* The audit's `aof: Vec<Vec<u8>>` field was pushed to from 17 sites
+  (the 15 `_with_change` writers, `from_json`, and the trait
+  `apply()` impl) but the only drain — `RedisAutomergeExt::commands()`
+  — was called from exactly one place: the `apply_and_persist` unit
+  test. Production never read the buffer; it grew until `am_free`
+  dropped the whole client.
+
+Proportionate fix: delete the buffer. Changes in
+`redis-automerge/src/ext.rs`:
+
+* Removed the `aof: Vec<Vec<u8>>` field from `RedisAutomergeClient`,
+  along with its three constructor initializers (`new`, `from_json`,
+  the trait `load`).
+* Removed all 15 `self.aof.push(change_bytes.clone());` lines from
+  the `_with_change` writers (a `replace_all` Edit collapsed the
+  three-line capture-and-push-and-return shape into a one-line
+  `return Ok(Some(change.raw_bytes().to_vec()));`). Did the same for
+  the `from_json` site and the trait `apply()` impl.
+* Dropped the `commands()` method from the `RedisAutomergeExt` trait
+  declaration and impl block. Trait doc-comment now states explicitly
+  that AOF replication is handled at the Redis command level via
+  `ctx.replicate`, not by a per-client change buffer.
+* Simplified `RedisAutomergeClient::estimated_mem_bytes` (the audit
+  #34 estimator) from a three-term sum (struct + uncompressed doc +
+  AOF spine/inner-capacity) to a two-term sum (struct +
+  uncompressed doc). Updated the doc-comment to call out the
+  simplification and back-reference this finding.
+
+Updated the `apply_and_persist` unit test (`lib.rs:~1846`) to read
+back the merged field's value instead of inspecting the gone
+`commands()` drain. Net diff on `ext.rs`: **+24 / -54** lines (≈30
+net lines removed).
+
+Verification:
+
+* `cargo test --lib` — **73 / 73** unit tests pass (same count as
+  before; `apply_and_persist` now asserts via `get_int("field")` and
+  `estimated_mem_bytes_grows_with_writes` still confirms monotonic
+  growth via the `save_nocompress` term).
+* `docker compose run --build --rm test` — **17 / 17** integration
+  suites pass. Most directly:
+  * `10-aof-persistence.sh` (the real "is AOF broken?" check —
+    `DEBUG RESTART` after incremental writes; all data survives).
+  * `01-basic-types.sh` Test 9 (MEMORY USAGE still non-zero, still
+    grows with writes; audit #34 estimator intact).
 
 ### 10. Unsafe functions suppress errors silently
 

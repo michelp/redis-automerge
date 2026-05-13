@@ -394,6 +394,13 @@ fn put_value_to_parent<T: Transactable, V: Into<ScalarValue>>(
 }
 
 /// Convenience methods for integrating Automerge with Redis persistence layers.
+///
+/// AOF replication is *not* handled here. Each AM.* write command in
+/// `lib.rs` calls `ctx.replicate(cmd, args)` via `finalize_write_meta`,
+/// which causes Redis to append the original command to the AOF file;
+/// on restart, the command is replayed by its normal handler. See
+/// audit #9 in `SECURITY_AUDIT.md` for the analysis of why a per-client
+/// change buffer was unnecessary.
 pub trait RedisAutomergeExt {
     /// Load an Automerge document from its persisted binary form.
     ///
@@ -408,22 +415,18 @@ pub trait RedisAutomergeExt {
     fn save(&self) -> Vec<u8>;
 
     /// Apply a list of changes to the document.
-    ///
-    /// The raw bytes of the applied changes are recorded internally so that
-    /// they can later be emitted as commands for Redis' AOF persistence.
     fn apply(&mut self, changes: Vec<Change>) -> Result<(), AutomergeError>;
-
-    /// Retrieve and clear the buffered AOF commands which represent the
-    /// changes previously applied via [`Self::apply`].
-    fn commands(&mut self) -> Vec<Vec<u8>>;
 }
 
 /// Client for managing an Automerge CRDT document with Redis-specific features.
 ///
 /// This struct wraps an Automerge document and provides:
 /// - Path-based access to nested data structures (maps and lists)
-/// - Change tracking for AOF persistence
 /// - Type-safe operations for common data types
+///
+/// AOF persistence is handled at the Redis command level (each AM.*
+/// write replicates its originating command via `ctx.replicate`); the
+/// client does not carry a per-instance change buffer.
 ///
 /// # Examples
 ///
@@ -447,7 +450,6 @@ pub trait RedisAutomergeExt {
 /// ```
 pub struct RedisAutomergeClient {
     doc: Automerge,
-    aof: Vec<Vec<u8>>,
 }
 
 impl RedisAutomergeClient {
@@ -463,7 +465,6 @@ impl RedisAutomergeClient {
     pub fn new() -> Self {
         Self {
             doc: Automerge::new(),
-            aof: Vec::new(),
         }
     }
 
@@ -472,7 +473,7 @@ impl RedisAutomergeClient {
     /// Audit #34: backs the Redis `mem_usage` callback so operators can
     /// monitor per-key Automerge memory consumption via
     /// `MEMORY USAGE <key>`. Automerge 0.9 does not expose a public
-    /// memory-accounting API, so this proxy combines three components:
+    /// memory-accounting API, so this proxy combines two components:
     ///
     /// 1. The struct's own stack-sized fields (`size_of::<Self>()`).
     /// 2. The uncompressed serialized document length
@@ -480,9 +481,12 @@ impl RedisAutomergeClient {
     ///    estimate available from the published `automerge` crate; the
     ///    compressed variant (`save()`) understates the live op-set by
     ///    the LZ4 compression ratio.
-    /// 3. The aggregate AOF change-log size: `sum(aof[*].capacity()) +
-    ///    aof.capacity() * size_of::<Vec<u8>>()`, accounting for both
-    ///    the inner buffers and the outer-Vec spine.
+    ///
+    /// (Audit #9 removed a former third component — a per-client
+    /// `aof: Vec<Vec<u8>>` change buffer — because it was dead state
+    /// in production. The actual Redis AOF mechanism is unrelated and
+    /// runs via `ctx.replicate` in the command handlers; see audit #9
+    /// for the analysis.)
     ///
     /// `MEMORY USAGE` is an operator command issued on demand, so the
     /// cost of serializing the document on each call (which `save_nocompress`
@@ -492,12 +496,7 @@ impl RedisAutomergeClient {
     pub fn estimated_mem_bytes(&self) -> usize {
         let struct_bytes = std::mem::size_of::<Self>();
         let doc_bytes = self.doc.save_nocompress().len();
-        let aof_inner_bytes: usize = self.aof.iter().map(|c| c.capacity()).sum();
-        let aof_spine_bytes = self.aof.capacity() * std::mem::size_of::<Vec<u8>>();
-        struct_bytes
-            .saturating_add(doc_bytes)
-            .saturating_add(aof_inner_bytes)
-            .saturating_add(aof_spine_bytes)
+        struct_bytes.saturating_add(doc_bytes)
     }
 
     /// Inserts a text value at the specified path.
@@ -664,9 +663,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -729,9 +726,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -766,9 +761,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -859,9 +852,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -908,9 +899,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1227,9 +1216,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1291,9 +1278,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1518,9 +1503,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1580,9 +1563,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1617,9 +1598,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1654,9 +1633,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1691,9 +1668,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -1999,9 +1974,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -2298,12 +2271,11 @@ impl RedisAutomergeClient {
             return Err(AutomergeError::Fail);
         }
 
-        let (hash, _patch) = tx.commit();
-        if let Some(h) = hash {
-            if let Some(change) = client.doc.get_change_by_hash(&h) {
-                client.aof.push(change.raw_bytes().to_vec());
-            }
-        }
+        // The commit hash is discarded here; the real AOF mechanism
+        // logs the originating AM.FROMJSON command via `ctx.replicate`
+        // in `finalize_write_meta`, so we don't need to capture the
+        // change bytes locally. (Audit #9.)
+        let (_hash, _patch) = tx.commit();
 
         Ok(client)
     }
@@ -2369,9 +2341,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -2435,9 +2405,7 @@ impl RedisAutomergeClient {
 
         if let Some(h) = hash {
             if let Some(change) = self.doc.get_change_by_hash(&h) {
-                let change_bytes = change.raw_bytes().to_vec();
-                self.aof.push(change_bytes.clone());
-                return Ok(Some(change_bytes));
+                return Ok(Some(change.raw_bytes().to_vec()));
             }
         }
 
@@ -2509,10 +2477,7 @@ impl Default for RedisAutomergeClient {
 impl RedisAutomergeExt for RedisAutomergeClient {
     fn load(bytes: &[u8]) -> Result<Self, AutomergeError> {
         let doc = Automerge::load(bytes)?;
-        Ok(Self {
-            doc,
-            aof: Vec::new(),
-        })
+        Ok(Self { doc })
     }
 
     fn save(&self) -> Vec<u8> {
@@ -2520,14 +2485,7 @@ impl RedisAutomergeExt for RedisAutomergeClient {
     }
 
     fn apply(&mut self, changes: Vec<Change>) -> Result<(), AutomergeError> {
-        for change in &changes {
-            self.aof.push(change.raw_bytes().to_vec());
-        }
         self.doc.apply_changes(changes)?;
         Ok(())
-    }
-
-    fn commands(&mut self) -> Vec<Vec<u8>> {
-        std::mem::take(&mut self.aof)
     }
 }
